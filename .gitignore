@@ -1,0 +1,5 @@
+# 依赖目录
+node_modules/
+
+# 依赖锁文件
+package-lock.json
