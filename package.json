@@ -9,8 +9,5 @@
     "stock-profit": "./scripts/profit.js",
     "stock-quotes": "./scripts/quotes.js",
     "stock-init-db": "./scripts/init-db.js"
-  },
-  "dependencies": {
-    "duckdb-async": "^1.4.2"
   }
 }
