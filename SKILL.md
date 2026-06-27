@@ -39,11 +39,17 @@ category: finance
 ### 场景：首次使用
 
 ```bash
+# 🔴 STOP · 检查点：首次使用前确认环境
+# 执行前询问："首次使用需要初始化，确认继续？"
+
 # 1. 检查 opencli stock 插件是否存在，不存在则自动复制
 ls ~/.opencli/plugins/stock/init.js || cp -r ~/Workspace/personal/stock-skill/resources/stock ~/.opencli/plugins/stock
 
 # 2. 获取 Cookie
 opencli stock init
+
+# 🔴 STOP · 检查点：Cookie 获取后确认
+# 执行前询问："Cookie 已获取，确认初始化数据库？"
 
 # 3. 初始化数据库
 cd ~/Workspace/personal/stock-skill/scripts && node init-db.js
@@ -274,6 +280,16 @@ FROM t_trade_record WHERE entry_date = current_date ORDER BY entry_time
 | 同步时使用未来日期 | 使用当前或历史日期 | API 会返回空数据 |
 | 匹配时使用比同步更大的范围 | 匹配范围应 ≤ 同步范围 | 会匹配到不存在的数据 |
 | 重复运行 init-db.js | 只在首次或损坏时运行 | 会清空已有数据 |
+| 网络超时时立即重试 | 等待 30 秒后重试 | 避免触发 API 限流 |
+| 同步时使用通配符日期 | 使用具体日期范围 | 避免同步过多数据 |
+| 在匹配完成前查询收益 | 先完成匹配再查询 | 未匹配数据不计入收益 |
+| 忽略错误重试次数 | 检查重试日志 | 可能是持久性错误 |
+| 同时运行多个 sync 进程 | 单线程执行 | 避免数据库并发冲突 |
+| 网络超时时立即重试 | 等待 30 秒后重试 | 避免触发 API 限流 |
+| 同步时使用通配符日期 | 使用具体日期范围 | 避免同步过多数据 |
+| 在匹配完成前查询收益 | 先完成匹配再查询 | 未匹配数据不计入收益 |
+| 忽略错误重试次数 | 检查重试日志 | 可能是持久性错误 |
+| 同时运行多个 sync 进程 | 单线程执行 | 避免数据库并发冲突 |
 
 ### ⚠️ 危险动作
 
