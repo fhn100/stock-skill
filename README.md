@@ -26,14 +26,14 @@ curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.0/install.sh | bash
 # 重新加载 shell 配置
 source ~/.bashrc  # 或 source ~/.zshrc
 
-# 安装 Node.js v20.20.2
-nvm install 20.20.2
+# 安装 Node.js LTS 版本
+nvm install --lts
 
-# 使用该版本
-nvm use 20.20.2
+# 使用 LTS 版本
+nvm use --lts
 
 # 验证安装
-node --version  # 应显示 v20.20.2
+node --version  # 应显示 LTS 版本号
 npm --version
 ```
 
