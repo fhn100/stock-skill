@@ -54,17 +54,20 @@ cd ~/Workspace/personal/stock-skill/scripts && node init-db.js
 ```bash
 cd ~/Workspace/personal/stock-skill/scripts
 
-# 1. 同步最新数据（可选，如用户要求"最新"）
+# 步骤1：同步最新数据（用户说"同步"或"最新"时执行）
 node sync.js
 
-# 2. 匹配交易记录（确保数据完整）
+# 步骤2：匹配交易记录（步骤1之后必须执行）
 node match.js
 
-# 3. 统计收益（核心步骤）
+# 步骤3：统计收益（始终执行）
 node profit.js [YYYY-MM] [YYYY-MM]
 ```
 
-**注意：** 如果用户只是问"这个月收益"，直接执行 `node profit.js` 即可，不需要每次都 sync+match。只有用户明确要求"同步"或"最新数据"时才执行前两步。
+**执行规则**：
+- 用户说"这个月收益" → 直接执行 `node profit.js`
+- 用户说"同步并查看收益" → 按顺序执行 sync → match → profit
+- 用户说"最新收益" → 按顺序执行 sync → match → profit
 
 **边界处理：**
 - Cookie 过期：同步失败时提示执行 `opencli stock init` 更新 Cookie
