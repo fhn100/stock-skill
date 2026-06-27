@@ -1,0 +1,9 @@
+{
+  "name": "opencli-plugin-stock",
+  "version": "0.2.0",
+  "type": "module",
+  "description": "OpenCLI plugin: 股票交易 Cookie 获取插件",
+  "peerDependencies": {
+    "@jackwener/opencli": ">=1.0.0"
+  }
+}

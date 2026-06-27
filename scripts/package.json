@@ -1,0 +1,9 @@
+{
+  "name": "stock-skill-scripts",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "股票交易数据处理脚本",
+  "dependencies": {
+    "@duckdb/node-api": "1.5.4-r.1"
+  }
+}
