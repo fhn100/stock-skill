@@ -1,0 +1,16 @@
+{
+  "name": "stock-skill",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "股票交易数据管理脚本（独立版本，不依赖 opencli）",
+  "bin": {
+    "stock-sync": "./scripts/sync.js",
+    "stock-match": "./scripts/match.js",
+    "stock-profit": "./scripts/profit.js",
+    "stock-quotes": "./scripts/quotes.js",
+    "stock-init-db": "./scripts/init-db.js"
+  },
+  "dependencies": {
+    "duckdb-async": "^1.4.2"
+  }
+}
