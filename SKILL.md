@@ -1,6 +1,6 @@
 ---
 name: stock-skill
-description: "股票交易数据管理技能，支持初始化、数据同步、交易匹配、收益统计和实时行情查询。使用场景：查看网格交易收益、同步交易数据、匹配买卖记录、获取持仓实时行情。触发词：股票收益、网格收益、交易统计、stock profit、同步交易、交易匹配、实时行情、持仓行情、股票行情"
+description: "股票交易数据管理：同步交易记录、匹配买卖、统计网格收益、查询实时行情。触发词：收益、同步、匹配、行情、持仓、profit、stock"
 category: finance
 ---
 
@@ -284,6 +284,12 @@ FROM t_trade_record WHERE entry_date = current_date ORDER BY entry_time
 | 跳过 match 直接查收益 | 先 match 再 profit | 未匹配的记录不会计入收益 |
 | 同步时不指定日期范围 | 指定具体日期范围 | 默认只同步当月，可能遗漏数据 |
 | 删除 stock.db 重新 init | 先备份再操作 | 会丢失历史数据 |
+| 使用 node v24 运行脚本 | 使用 node v20 或以下 | DuckDB 原生模块兼容性问题 |
+| 在 scripts 目录外执行脚本 | 必须在 scripts 目录下执行 | 相对路径会找不到模块 |
+| 直接修改 sql-sync.js 的 SQL | 使用 Node.js fetch 替代 | 已移除 http_request 扩展依赖 |
+| 同步时使用未来日期 | 使用当前或历史日期 | API 会返回空数据 |
+| 匹配时使用比同步更大的范围 | 匹配范围应 ≤ 同步范围 | 会匹配到不存在的数据 |
+| 重复运行 init-db.js | 只在首次或损坏时运行 | 会清空已有数据 |
 
 ### ⚠️ 危险动作
 
