@@ -16,7 +16,26 @@
 
 1. **Node.js** v20+（推荐 v20.20.2）
 2. **opencli** CLI 工具
-3. **DuckDB** CLI（可选，用于直接查询）
+
+### 安装 nvm 和 Node.js
+
+```bash
+# 安装 nvm
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.0/install.sh | bash
+
+# 重新加载 shell 配置
+source ~/.bashrc  # 或 source ~/.zshrc
+
+# 安装 Node.js v20.20.2
+nvm install 20.20.2
+
+# 使用该版本
+nvm use 20.20.2
+
+# 验证安装
+node --version  # 应显示 v20.20.2
+npm --version
+```
 
 ### 安装 opencli
 
@@ -45,21 +64,6 @@ cd ~/.opencli/plugins/stock && npm install
 
 ```bash
 cd ~/.claude/skills/stock-skill/scripts && npm install
-```
-
-### 安装 DuckDB CLI（可选）
-
-```bash
-# 下载 DuckDB CLI
-curl -fsSL https://github.com/duckdb/duckdb/releases/download/v1.2.2/duckdb_cli-linux-amd64.zip -o /tmp/duckdb.zip
-
-# 解压并安装
-unzip /tmp/duckdb.zip -d /tmp/duckdb
-mv /tmp/duckdb/duckdb ~/.local/bin/
-chmod +x ~/.local/bin/duckdb
-
-# 验证安装
-~/.local/bin/duckdb --version
 ```
 
 ## 快速开始
