@@ -113,8 +113,14 @@ node quotes.js 冯
 ```bash
 cd ~/Workspace/personal/stock-skill/scripts
 
+# 🔴 STOP · 检查点：同步前必须确认时间范围
+# 执行前询问："确认同步 XXXX-XX-XX 至 XXXX-XX-XX 的数据？"
+
 # 同步 2025 年至今所有数据
 node sync.js 20250101 20260627
+
+# 🔴 STOP · 检查点：匹配前确认同步完成
+# 执行前询问："同步已完成，确认匹配这些数据？"
 
 # 然后匹配
 node match.js 20250101 20260627
@@ -151,65 +157,28 @@ FROM t_trade_record WHERE entry_date = current_date ORDER BY entry_time
 
 ## 命令参考
 
-### `opencli stock init`
-首次使用执行，通过浏览器获取 Cookie 并写入配置文件。
+| 命令 | 参数 | 说明 |
+|------|------|------|
+| `opencli stock init` | 无 | 获取 Cookie，自动安装插件 |
+| `node init-db.js` | 无 | 初始化数据库表结构 |
+| `node sync.js` | `[startDate] [endDate]` | 同步交易记录，日期格式 YYYYMMDD |
+| `node match.js` | `[startDate] [endDate]` | 匹配买卖记录 |
+| `node profit.js` | `[startMonth] [endMonth]` | 查询收益，月份格式 YYYY-MM |
+| `node quotes.js` | `[account]` | 查询实时行情，account 可选 |
 
-**自动插件安装：** 如果 `~/.opencli/plugins/stock` 目录不存在，会自动从 `~/Workspace/personal/stock-skill/resources/stock` 复制。
+**关键特性**：
+- sync：自动分页（max_page）、错误重试（3次）、幂等（INSERT OR REPLACE）
+- profit：年收益 = 年初到查询截止月累计
+- quotes：实时 API，无需提前同步
 
-### `node init-db.js`
-初始化数据库表结构并同步账户信息。
+## 输出格式
 
-### `node sync.js [startDate] [endDate]`
-- 日期格式：`YYYYMMDD`，不传默认同步当月
-- 支持自动分页（根据 API 返回的 max_page）
-- 支持错误重试（默认 3 次）
-- 使用 `INSERT OR REPLACE`，重复同步不会产生重复数据
-
-### `node match.js [startDate] [endDate]`
-将买入/卖出记录按 `account_id + code + entry_count` 配对。自动循环匹配直到完成。
-
-### `node profit.js [startMonth] [endMonth]`
-- 月份格式 `YYYY-MM`，不传默认当月
-- **必须用此命令统计收益，不要直接 SQL 查询**
-- 年收益 = 年初到查询截止月的累计（非全年）
-
-### `node quotes.js [account]`
-- 获取持仓股票的实时行情数据
-- `account` 参数可选，用于过滤账户名称（支持模糊匹配）
-- 实时调用 API，无需提前同步
-
-**输出字段说明：**
-- 账户名称：脱敏显示（保留姓，名替换为*）
-- 代码：股票代码
-- 名称：股票名称
-- 当日盈亏：今日盈亏金额
-- 当日盈亏率：今日盈亏百分比
-- 持有数量：当前持有股数
-- 持有金额：当前持有市值
-- 最新价：当前市场价格
-- 持有盈亏：累计盈亏金额
-- 持有盈亏率：累计盈亏百分比
-- 汇总：账户持仓汇总信息
-
-## 输出格式规范
-
-### profit 输出
-- 精简表格，按总收益降序排列
-- 末尾附**月收益**和**年收益**汇总行
-- 收益为正显示正值，为负显示负值
-
-### quotes 输出
-- 按账户分组展示持仓行情
-- 每个账户末尾附**汇总**行
-- 按当日盈亏率降序排列
-
-### sync 输出
-- 成功：告知同步的记录数和时间范围
-- 失败：提示 Cookie 是否过期，引导更新配置文件
-
-### match 输出
-- 成功：告知匹配成功数量
-- 部分未匹配：提示未匹配数量，说明原因
+| 命令 | 输出格式 |
+|------|----------|
+| profit | 表格：账户/时间/代码/名称/交易次数/总收益，末尾附月/年收益汇总 |
+| quotes | 按账户分组，每组末尾附汇总行，按当日盈亏率降序 |
+| sync | 成功：记录数+时间范围；失败：提示更新 Cookie |
+| match | 成功：匹配数量；部分未匹配：提示原因 |
 
 ## 数据速查
 
@@ -236,6 +205,8 @@ FROM t_trade_record WHERE entry_date = current_date ORDER BY entry_time
 2. **网络是否正常？** → 执行 `curl -s https://tzzb.10jqka.com.cn` 测试连通性
 3. **日期格式是否正确？** → 必须是 `YYYYMMDD`，如 `20260627`
 4. **脚本目录是否正确？** → 必须在 `~/Workspace/personal/stock-skill/scripts/` 下执行
+5. **是否 API 限流？** → 等待 30 秒后重试，脚本内置 3 次重试
+6. **是否并发冲突？** → 检查是否有其他 sync 进程运行：`ps aux | grep sync.js`
 
 **回退方案**：如果同步失败，数据不会丢失，可重新执行。
 
