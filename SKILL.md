@@ -221,14 +221,54 @@ ORDER BY entry_time
 
 ## 故障排除
 
-| 症状 | 原因 | 处理 |
-|------|------|------|
-| 同步失败 | Cookie 过期 | 执行 `opencli stock init` 更新 Cookie |
-| 无收益数据 | 未匹配 | 执行 `node match.js` |
-| 收益异常 | 未匹配记录 | 检查是否有未匹配的卖出 |
-| DB 错误 | 表结构变更 | 执行 `node init-db.js` 重新初始化 |
-| 行情获取失败 | Cookie 过期 | 执行 `opencli stock init` 更新 Cookie |
-| 行情获取失败 | 网络问题 | 检查网络连接 |
+### 如果同步失败
+
+**症状**：`node sync.js` 报错或返回空数据
+
+**检查顺序**：
+1. **Cookie 是否过期？** → 检查 `~/.duckdb/stock/config` 文件修改时间，超过 24 小时执行 `opencli stock init`
+2. **网络是否正常？** → 执行 `curl -s https://tzzb.10jqka.com.cn` 测试连通性
+3. **日期格式是否正确？** → 必须是 `YYYYMMDD`，如 `20260627`
+4. **脚本目录是否正确？** → 必须在 `~/Workspace/personal/stock-skill/scripts/` 下执行
+
+**回退方案**：如果同步失败，数据不会丢失，可重新执行。
+
+### 如果匹配失败
+
+**症状**：`node match.js` 匹配数量为 0
+
+**检查顺序**：
+1. **是否已同步？** → 先执行 `node sync.js` 确保有数据
+2. **时间范围是否匹配？** → match 的日期范围必须覆盖 sync 的日期范围
+3. **数据库是否有数据？** → 执行 `~/.local/bin/duckdb ~/.duckdb/stock/stock.db -c "SELECT count(*) FROM t_trade_record;"`
+
+### 如果收益查询失败
+
+**症状**：`node profit.js` 返回空或报错
+
+**检查顺序**：
+1. **是否已匹配？** → 先执行 `node match.js`
+2. **月份格式是否正确？** → 必须是 `YYYY-MM`，如 `2026-06`
+3. **该月是否有数据？** → 检查 `t_trade_matched_record` 表是否有该月数据
+
+### 如果行情获取失败
+
+**症状**：`node quotes.js` 报错或返回空
+
+**检查顺序**：
+1. **Cookie 是否过期？** → 执行 `opencli stock init` 更新
+2. **网络是否正常？** → 检查网络连接
+3. **账户是否有持仓？** → 确认股票账户有持仓股票
+
+### 如果数据库损坏
+
+**症状**：各种 SQL 错误
+
+**处理**：
+1. 备份：`cp ~/.duckdb/stock/stock.db ~/.duckdb/stock/stock.db.bak`
+2. 重新初始化：`node init-db.js`
+3. 重新同步：`node sync.js 20250101 $(date +%Y%m%d)`
+4. 重新匹配：`node match.js 20250101 $(date +%Y%m%d)`
 
 ## 注意事项
 
