@@ -118,30 +118,20 @@ node match.js 20250101 20260627
 mcp_mcp_server_duckdb_query(query="SQL语句")
 ```
 
-查询个股交易记录：
+**常用查询模板：**
+
 ```sql
+-- 查询个股交易记录
 SELECT account_name, name, code, op, entry_price, entry_count, entry_money, entry_date, entry_time
-FROM t_trade_record
-WHERE name LIKE '%股票名%'
-ORDER BY entry_date DESC, entry_time DESC
-LIMIT 20
-```
+FROM t_trade_record WHERE name LIKE '%股票名%' ORDER BY entry_date DESC, entry_time DESC LIMIT 20
 
-查询匹配记录：
-```sql
+-- 查询匹配记录
 SELECT account_name, name, code, buy_price, buy_count, sell_price, sell_count, profit, buy_date, sell_date
-FROM t_trade_matched_record
-WHERE name LIKE '%股票名%'
-ORDER BY sell_date DESC
-LIMIT 20
-```
+FROM t_trade_matched_record WHERE name LIKE '%股票名%' ORDER BY sell_date DESC LIMIT 20
 
-查询今日交易：
-```sql
+-- 查询今日交易
 SELECT entry_date, entry_time, code, name, op, entry_price, entry_count, entry_money
-FROM t_trade_record
-WHERE entry_date = current_date
-ORDER BY entry_time
+FROM t_trade_record WHERE entry_date = current_date ORDER BY entry_time
 ```
 
 **注意：** op='1' 买入，op='2' 卖出。始终用 `op` 字段，不要用 `op_name`。
