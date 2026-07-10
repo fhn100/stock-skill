@@ -42,12 +42,6 @@ export const API_DEFAULTS = {
   VERSION: "0.0.0",
 };
 
-// ============================ 初始化 ============================
-
-export const INIT_URL = "https://s.hexin.cn/";
-export const INIT_WAIT_MS = 1500;
-export const COOKIE_DOMAIN = ".10jqka.com.cn";
-
 // ============================ 交易操作类型 ============================
 
 export const OP = { BUY: "1", SELL: "2" };

@@ -9,8 +9,8 @@ import { COOKIE_REQUIRED_FIELDS, COOKIE_EXPIRY_SECONDS } from "./constants.js";
  * @returns {string} 数据目录路径
  */
 export function getDataDir() {
-  // 数据目录在父级目录的 data 文件夹中
-  const dir = join(import.meta.dirname, "..", "..", "data");
+  // 数据目录移至 ~/.duckdb/stock/
+  const dir = join(process.env.HOME, ".duckdb", "stock");
   fs.mkdirSync(dir, { recursive: true });
   return dir;
 }

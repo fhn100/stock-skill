@@ -1,8 +1,8 @@
-import { Database } from "duckdb-async";
+import { DuckDBInstance } from "@duckdb/node-api";
 import { join } from "path";
 import { getDataDir } from "./utils.js";
 import { CREATE_DICT, CREATE_TRADE_RECORD, CREATE_TRADE_MATCHED } from "./sql-schema.js";
-import { SYNC_ACCOUNT, SYNC_TRADE } from "./sql-sync.js";
+import { INSERT_ACCOUNT, INSERT_TRADE } from "./sql-sync.js";
 import { TRADE_MATCH } from "./sql-match.js";
 import { GRID_PROFIT } from "./sql-profit.js";
 
@@ -15,8 +15,8 @@ process.noDeprecation = true;
  */
 class DatabaseManager {
   constructor() {
+    this._instance = null;
     this._conn = null;
-    this._httpLoaded = false;
   }
 
   /**
@@ -33,16 +33,46 @@ class DatabaseManager {
    */
   async getConnection() {
     if (!this._conn) {
-      this._conn = await Database.create(this.getDbPath());
+      this._instance = await DuckDBInstance.create(this.getDbPath());
+      this._conn = await this._instance.connect();
     }
-    
-    // HTTP 扩展只需加载一次
-    if (!this._httpLoaded) {
-      await this._conn.run("INSTALL http_request FROM community; LOAD http_request;");
-      this._httpLoaded = true;
-    }
-    
     return this._conn;
+  }
+
+  /**
+   * 执行查询
+   * @param {string} sql - SQL 语句
+   * @param {Array} params - 参数
+   * @returns {Promise<Array>} 查询结果
+   */
+  async all(sql, params = []) {
+    const conn = await this.getConnection();
+    const reader = await conn.runAndReadAll(sql, params);
+    return reader.getRowObjects();
+  }
+
+  /**
+   * 执行单条查询并返回第一行
+   * @param {string} sql - SQL 语句
+   * @param {Array} params - 参数
+   * @returns {Promise<Object>} 第一行数据
+   */
+  async get(sql, params = []) {
+    const conn = await this.getConnection();
+    const reader = await conn.runAndReadAll(sql, params);
+    const rows = reader.getRowObjects();
+    return rows[0] || null;
+  }
+
+  /**
+   * 执行语句（INSERT/UPDATE/DELETE）
+   * @param {string} sql - SQL 语句
+   * @param {Array} params - 参数
+   * @returns {Promise<void>}
+   */
+  async run(sql, params = []) {
+    const conn = await this.getConnection();
+    await conn.run(sql, params);
   }
 
   /**
@@ -51,12 +81,11 @@ class DatabaseManager {
   async closeConnection() {
     if (this._conn) {
       try {
-        await this._conn.close();
+        this._conn = null;
+        this._instance = null;
       } catch (e) {
         console.error("关闭数据库连接失败:", e);
       }
-      this._conn = null;
-      this._httpLoaded = false;
     }
   }
 }
@@ -76,30 +105,24 @@ export function getDbPath() {
 
 /**
  * 执行数据库操作的通用封装
- * 自动管理预处理语句的生命周期
- * @param {Function} fn - 接收 (conn, stmt) 的回调
+ * @param {Function} fn - 接收 (db, stmt) 的回调
  * @param {string} [sql] - 预处理 SQL（如提供则自动 prepare）
  * @returns {Promise<*>} fn 的返回值
  */
 export async function withDb(fn, sql) {
   const conn = await dbManager.getConnection();
-  const stmt = sql ? await conn.prepare(sql) : null;
-  try {
-    return await fn(conn, stmt);
-  } finally {
-    if (stmt) {
-      try { await stmt.finalize(); } catch (_) {}
-    }
+  if (sql) {
+    return await fn(dbManager, { all: async (...params) => {
+      const reader = await conn.runAndReadAll(sql, params);
+      return reader.getRowObjects();
+    }});
   }
+  return await fn(dbManager, null);
 }
 
-// 进程退出清理（内部函数，不导出）
-async function closeDbManager() {
-  await dbManager.closeConnection();
-}
-
-process.on("SIGINT", async () => { try { await closeDbManager(); } catch (_) {} process.exit(0); });
-process.on("SIGTERM", async () => { try { await closeDbManager(); } catch (_) {} process.exit(0); });
+// 进程退出清理
+process.on("SIGINT", async () => { try { await dbManager.closeConnection(); } catch (_) {} process.exit(0); });
+process.on("SIGTERM", async () => { try { await dbManager.closeConnection(); } catch (_) {} process.exit(0); });
 
 // ============================ 常量 ============================
 
@@ -110,8 +133,8 @@ export const SQL = {
   CREATE_DICT,
   CREATE_TRADE_RECORD,
   CREATE_TRADE_MATCHED,
-  SYNC_ACCOUNT,
-  SYNC_TRADE,
   TRADE_MATCH,
   GRID_PROFIT,
 };
+
+export { INSERT_ACCOUNT, INSERT_TRADE };
