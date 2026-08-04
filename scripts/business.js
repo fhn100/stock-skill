@@ -288,6 +288,32 @@ export async function tradeMatch() {
   });
 }
 
+/**
+ * 反向匹配交易记录（先卖后买，做空交易）
+ */
+export async function tradeMatchReverse() {
+  await withDb(async (conn) => {
+    let total = 0;
+    let iterations = 0;
+    const MAX_ITERATIONS = 100;
+
+    while (iterations < MAX_ITERATIONS) {
+      const result = await conn.run(SQL.TRADE_MATCH_GRID_REVERSE);
+      const affected = result?.rowsChanged || 0;
+      if (affected === 0) break;
+      total += affected;
+      iterations++;
+      console.log(`反向匹配交易记录成功, 本轮匹配 ${affected} 条`);
+    }
+
+    if (iterations >= MAX_ITERATIONS) {
+      console.warn(`反向匹配达到安全上限 ${MAX_ITERATIONS} 次，可能存在异常数据`);
+    }
+
+    console.log(`反向匹配交易记录完成，本次共新增 ${total} 条匹配`);
+  });
+}
+
 // ============================ 收益查询 ============================
 
 /**
