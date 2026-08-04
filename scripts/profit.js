@@ -13,7 +13,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 // 导入核心模块
-import { syncTrade, tradeMatch, gridProfit } from "./business.js";
+import { syncTrade, tradeMatch, tradeMatchReverse, gridProfit } from "./business.js";
 import { getCurrentMonth, getDefaultDateRange } from "./utils.js";
 
 // 解析命令行参数
@@ -27,8 +27,9 @@ try {
   console.log(`同步范围：${startDate} ~ ${endDate}`);
   await syncTrade(startDate, endDate);
 
-  // 匹配交易记录
+  // 匹配交易记录（先正向：先买后卖；再反向：先卖后买做空）
   await tradeMatch();
+  await tradeMatchReverse();
 
   // 查询收益
   console.log(`查询范围：${start} ~ ${end}`);
