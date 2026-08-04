@@ -1,21 +1,16 @@
 /**
  * SQL 交易匹配相关定义 - 改进版
  * 使用网格交易匹配算法：
- * 1. 时间窗口限制（默认60天）
- * 2. 优先匹配价格最接近的买入
+ * 优先匹配价格最接近的买入
  */
 
 import { TABLE, OP } from "./constants.js";
 
-// 网格交易最大持有天数
-const GRID_MAX_DAYS = 60;
-
 /**
  * 交易匹配 SQL - 网格专用算法
  * 匹配逻辑：
- * 1. 时间窗口限制：买入和卖出间隔不超过 GRID_MAX_DAYS 天
- * 2. 价格接近优先：买入价和卖出价越接近，优先匹配
- * 3. 排除已匹配记录
+ * 1. 价格接近优先：买入价和卖出价越接近，优先匹配
+ * 2. 排除已匹配记录
  */
 export const TRADE_MATCH_GRID = `
   INSERT INTO ${TABLE.TRADE_MATCHED}
@@ -67,9 +62,8 @@ export const TRADE_MATCH_GRID = `
       ) t2
       ON t2.account_id = t1.account_id AND t2.code = t1.code
          AND t2.entry_count = t1.entry_count
-         -- 买入时间早于卖出时间，且不超过时间窗口
+         -- 买入时间早于卖出时间
          AND t2.entry_date_time <= t1.entry_date_time
-         AND (t1.entry_date_time - t2.entry_date_time) <= INTERVAL '${GRID_MAX_DAYS} days'
     ) t
     -- 排除已匹配的记录（卖出和买入都要排除，避免同一买入被多个卖出重复使用）
     LEFT JOIN (SELECT sell_history_id FROM ${TABLE.TRADE_MATCHED}) t2 ON t2.sell_history_id = t.sell_history_id
