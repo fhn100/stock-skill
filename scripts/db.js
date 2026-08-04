@@ -68,11 +68,11 @@ class DatabaseManager {
    * 执行语句（INSERT/UPDATE/DELETE）
    * @param {string} sql - SQL 语句
    * @param {Array} params - 参数
-   * @returns {Promise<void>}
+   * @returns {Promise<object>} 执行结果（含 rowsAffected）
    */
   async run(sql, params = []) {
     const conn = await this.getConnection();
-    await conn.run(sql, params);
+    return await conn.run(sql, params);
   }
 
   /**

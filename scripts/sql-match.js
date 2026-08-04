@@ -1,7 +1,7 @@
 /**
- * SQL 交易匹配相关定义 - 改进版
+ * SQL 交易匹配相关定义
  * 使用网格交易匹配算法：
- * 优先匹配价格最接近的买入
+ * 优先匹配时间最近的买入，排除已匹配记录
  */
 
 import { TABLE, OP } from "./constants.js";
@@ -9,7 +9,7 @@ import { TABLE, OP } from "./constants.js";
 /**
  * 交易匹配 SQL - 网格专用算法
  * 匹配逻辑：
- * 1. 价格接近优先：买入价和卖出价越接近，优先匹配
+ * 1. 时间优先：买入越早（相对卖出）越优先，模拟 FIFO
  * 2. 排除已匹配记录
  */
 export const TRADE_MATCH_GRID = `
@@ -27,8 +27,8 @@ export const TRADE_MATCH_GRID = `
     t.sell_history_id, t.buy_history_id
   FROM (
     SELECT *,
-      ROW_NUMBER() OVER (PARTITION BY t.sell_history_id ORDER BY t.price_diff) AS sell_seq,
-      ROW_NUMBER() OVER (PARTITION BY t.buy_history_id ORDER BY t.price_diff) AS buy_seq
+      ROW_NUMBER() OVER (PARTITION BY t.sell_history_id ORDER BY t.days_diff DESC) AS sell_seq,
+      ROW_NUMBER() OVER (PARTITION BY t.buy_history_id ORDER BY t.days_diff DESC) AS buy_seq
     FROM (
       SELECT
         t1.account_id, t1.account_name, t1.code, t1.name,
@@ -70,7 +70,7 @@ export const TRADE_MATCH_GRID = `
     LEFT JOIN (SELECT buy_history_id FROM ${TABLE.TRADE_MATCHED}) t3 ON t3.buy_history_id = t.buy_history_id
     WHERE t2.sell_history_id IS NULL AND t3.buy_history_id IS NULL
   ) t
-  -- 双向约束：卖出只选价格最接近的买入，且该买入也只被它选为最接近（保证一对一）
+  -- 双向约束：卖出只选时间最接近的买入（FIFO），且该买入也只被它选为最接近（保证一对一）
   WHERE t.sell_seq = 1 AND t.buy_seq = 1;`;
 
 /**

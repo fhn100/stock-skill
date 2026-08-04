@@ -16,9 +16,7 @@ import {
   CREATE_DICT, CREATE_TRADE_RECORD, CREATE_TRADE_MATCHED
 } from "./sql-schema.js";
 import { INSERT_ACCOUNT, INSERT_TRADE } from "./sql-sync.js";
-
-// 匹配最大迭代次数，防止死循环
-const MATCH_MAX_ITERATIONS = 100;
+import { SQL } from "./db.js";
 
 // ============================ HTTP 请求工具 ============================
 
@@ -270,91 +268,21 @@ export async function tradeMatch() {
   await withDb(async (conn) => {
     let total = 0;
     let iterations = 0;
-    
-    while (iterations < MATCH_MAX_ITERATIONS) {
-      // 获取潜在匹配对
-      const potential = await conn.all(`
-        WITH unmatched_sells AS (
-          SELECT t1.account_id, t1.account_name, t1.code, t1.name,
-            t1.entry_price AS sell_entry_price, t1.entry_count AS sell_entry_count,
-            t1.entry_money AS sell_entry_money, t1.transfer_fee AS sell_transfer_fee,
-            IF(t1.entry_money = t1.transfer_fee, t1.entry_money, t1.entry_money - t1.transfer_fee) AS sell_moneychg,
-            CAST(t1.entry_date_time AS TIMESTAMP) AS sell_time,
-            t1.history_id AS sell_history_id
-          FROM t_trade_record t1 WHERE t1.op = '2'
-            AND t1.history_id NOT IN (SELECT sell_history_id FROM t_trade_matched_record)
-        ),
-        ranked_matches AS (
-          SELECT us.account_id, us.account_name, us.code, us.name,
-            us.sell_entry_price, bb.entry_price AS buy_entry_price,
-            us.sell_entry_count, bb.entry_count AS buy_entry_count,
-            us.sell_entry_money, bb.entry_money AS buy_entry_money,
-            us.sell_transfer_fee, bb.transfer_fee AS buy_transfer_fee,
-            us.sell_moneychg - IF(bb.entry_money = bb.transfer_fee, bb.entry_money, bb.entry_money + bb.transfer_fee) AS profit,
-            us.sell_time, CAST(bb.entry_date_time AS TIMESTAMP) AS buy_time,
-            us.sell_history_id, bb.history_id AS buy_history_id,
-            ROW_NUMBER() OVER (PARTITION BY us.sell_history_id ORDER BY bb.entry_date_time DESC) AS sell_rank,
-            ROW_NUMBER() OVER (PARTITION BY bb.history_id ORDER BY us.sell_time DESC) AS buy_rank
-          FROM unmatched_sells us
-          INNER JOIN t_trade_record bb ON bb.op = '1'
-            AND bb.account_id = us.account_id AND bb.code = us.code
-            AND bb.entry_count = us.sell_entry_count
-            AND CAST(bb.entry_date_time AS TIMESTAMP) <= us.sell_time
-            AND bb.history_id NOT IN (SELECT buy_history_id FROM t_trade_matched_record)
-        )
-        SELECT account_id, account_name,
-          STRFTIME(sell_time, '%Y') as year, STRFTIME(sell_time, '%Y-%m') as month,
-          code, name,
-          sell_entry_price, buy_entry_price,
-          sell_entry_count, buy_entry_count,
-          sell_entry_money, buy_entry_money,
-          sell_transfer_fee, buy_transfer_fee,
-          profit, sell_time, buy_time,
-          sell_history_id, buy_history_id
-        FROM ranked_matches
-        WHERE sell_rank = 1 AND buy_rank = 1
-      `);
-      
-      if (potential.length === 0) break;
-      
-      // 在应用层去重：每个买入只能匹配一个卖出，每个卖出只能匹配一个买入
-      const matchedBuys = new Set();
-      const matchedSells = new Set();
-      const unique = [];
-      
-      for (const row of potential) {
-        if (!matchedBuys.has(row.buy_history_id) && !matchedSells.has(row.sell_history_id)) {
-          matchedBuys.add(row.buy_history_id);
-          matchedSells.add(row.sell_history_id);
-          unique.push(row);
-        }
-      }
-      
-      if (unique.length === 0) break;
-      
-      // 批量插入
-      for (const row of unique) {
-        await conn.run(`INSERT INTO t_trade_matched_record VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [
-          row.account_id, row.account_name, row.year, row.month,
-          row.code, row.name, row.sell_entry_price, row.buy_entry_price,
-          row.sell_entry_count, row.buy_entry_count, row.sell_entry_money, row.buy_entry_money,
-          row.sell_transfer_fee, row.buy_transfer_fee, row.profit, row.sell_time, row.buy_time,
-          row.sell_history_id, row.buy_history_id
-        ]);
-      }
-      
-      total += unique.length;
+    const MAX_ITERATIONS = 100;
+
+    while (iterations < MAX_ITERATIONS) {
+      const result = await conn.run(SQL.TRADE_MATCH_GRID);
+      const affected = result?.rowsAffected || 0;
+      if (affected === 0) break;
+      total += affected;
       iterations++;
-      
-      if (unique.length > 0) {
-        console.log(`匹配交易记录成功, 本轮匹配 ${unique.length} 条`);
-      }
+      console.log(`匹配交易记录成功, 本轮匹配 ${affected} 条`);
     }
-    
-    if (iterations >= MATCH_MAX_ITERATIONS) {
-      console.warn(`匹配达到安全上限 ${MATCH_MAX_ITERATIONS} 次，可能存在异常数据`);
+
+    if (iterations >= MAX_ITERATIONS) {
+      console.warn(`匹配达到安全上限 ${MAX_ITERATIONS} 次，可能存在异常数据`);
     }
-    
+
     console.log(`匹配交易记录完成，本次共新增 ${total} 条匹配`);
   });
 }
