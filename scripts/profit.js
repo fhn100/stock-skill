@@ -40,13 +40,15 @@ try {
     console.log("─".repeat(70));
     console.log(
       "账户".padEnd(12) +
-      "时间".padEnd(10) +
       "股票代码".padEnd(10) +
       "股票名称".padEnd(12) +
+      "时间".padEnd(10) +
       "交易次数".padEnd(8) +
       "总收益"
     );
     console.log("─".repeat(70));
+
+    let prevAccount = "";
 
     for (const row of results) {
       const account = row["账户"] || "";
@@ -58,9 +60,9 @@ try {
 
       console.log(
         account.padEnd(12) +
-        time.padEnd(10) +
         code.padEnd(10) +
         name.padEnd(12) +
+        time.padEnd(10) +
         String(count).padEnd(8) +
         profit.toFixed(2)
       );
