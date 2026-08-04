@@ -105,7 +105,7 @@ export async function initAccount() {
  * @param {number} [retryCount=3] - 剩余重试次数
  * @returns {Promise<number>} 同步的记录数
  */
-export async function syncTradeByFundKey(fundKey, startDate, endDate, page = 1, retryCount = 3) {
+async function syncTradeByFundKey(fundKey, startDate, endDate, page = 1, retryCount = 3) {
   try {
     checkCookieValid();
     const cookie = getCookie();
