@@ -28,8 +28,8 @@ export const TRADE_MATCH_GRID = `
     t.sell_history_id, t.buy_history_id
   FROM (
     SELECT *,
-      ROW_NUMBER() OVER (PARTITION BY t.sell_history_id ORDER BY t.days_diff ASC) AS sell_seq,
-      ROW_NUMBER() OVER (PARTITION BY t.buy_history_id ORDER BY t.days_diff ASC) AS buy_seq
+      ROW_NUMBER() OVER (PARTITION BY t.sell_history_id ORDER BY t.days_diff ASC, t.buy_time ASC, t.buy_history_id ASC) AS sell_seq,
+      ROW_NUMBER() OVER (PARTITION BY t.buy_history_id ORDER BY t.days_diff ASC, t.sell_time ASC, t.sell_history_id ASC) AS buy_seq
     FROM (
       SELECT
         t1.account_id, t1.account_name, t1.code, t1.name,
@@ -146,8 +146,8 @@ export const TRADE_MATCH_GRID_REVERSE = `
     t.sell_history_id, t.buy_history_id
   FROM (
     SELECT *,
-      ROW_NUMBER() OVER (PARTITION BY t.sell_history_id ORDER BY t.days_diff ASC) AS sell_seq,
-      ROW_NUMBER() OVER (PARTITION BY t.buy_history_id ORDER BY t.days_diff ASC) AS buy_seq
+      ROW_NUMBER() OVER (PARTITION BY t.sell_history_id ORDER BY t.days_diff ASC, t.buy_time ASC, t.buy_history_id ASC) AS sell_seq,
+      ROW_NUMBER() OVER (PARTITION BY t.buy_history_id ORDER BY t.days_diff ASC, t.sell_time ASC, t.sell_history_id ASC) AS buy_seq
     FROM (
       SELECT
         t1.account_id, t1.account_name, t1.code, t1.name,
