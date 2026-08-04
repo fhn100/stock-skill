@@ -1,58 +1,120 @@
 /**
- * SQL 交易匹配相关定义
- * 包含交易记录匹配的 SQL
+ * SQL 交易匹配相关定义 - 改进版
+ * 使用网格交易匹配算法：
+ * 1. 时间窗口限制（默认60天）
+ * 2. 优先匹配价格最接近的买入
  */
 
 import { TABLE, OP } from "./constants.js";
 
-/**
- * 一键批量匹配 - 分两步执行
- * 第一步：获取所有潜在匹配对（每个卖出只取最近一个买入）
- * 第二步：在应用层去重后插入
- */
-export const TRADE_MATCH = `
-  WITH unmatched_sells AS (
-    SELECT t1.account_id, t1.account_name, t1.code, t1.name,
-      t1.entry_price AS sell_entry_price, t1.entry_count AS sell_entry_count,
-      t1.entry_money AS sell_entry_money, t1.transfer_fee AS sell_transfer_fee,
-      IF(t1.entry_money = t1.transfer_fee, t1.entry_money, t1.entry_money - t1.transfer_fee) AS sell_moneychg,
-      CAST(t1.entry_date_time AS TIMESTAMP) AS sell_time,
-      t1.history_id AS sell_history_id
-    FROM ${TABLE.TRADE_RECORD} t1 WHERE t1.op = ${OP.SELL}
-      AND t1.history_id NOT IN (SELECT sell_history_id FROM ${TABLE.TRADE_MATCHED})
-  ),
-  ranked_matches AS (
-    SELECT us.account_id, us.account_name, us.code, us.name,
-      us.sell_entry_price, bb.entry_price AS buy_entry_price,
-      us.sell_entry_count, bb.entry_count AS buy_entry_count,
-      us.sell_entry_money, bb.entry_money AS buy_entry_money,
-      us.sell_transfer_fee, bb.transfer_fee AS buy_transfer_fee,
-      us.sell_moneychg - IF(bb.entry_money = bb.transfer_fee, bb.entry_money, bb.entry_money + bb.transfer_fee) AS profit,
-      us.sell_time, CAST(bb.entry_date_time AS TIMESTAMP) AS buy_time,
-      us.sell_history_id, bb.history_id AS buy_history_id,
-      ROW_NUMBER() OVER (PARTITION BY us.sell_history_id ORDER BY bb.entry_date_time DESC) AS sell_rank,
-      ROW_NUMBER() OVER (PARTITION BY bb.history_id ORDER BY us.sell_time DESC) AS buy_rank
-    FROM unmatched_sells us
-    INNER JOIN ${TABLE.TRADE_RECORD} bb ON bb.op = ${OP.BUY}
-      AND bb.account_id = us.account_id AND bb.code = us.code
-      AND bb.entry_count = us.sell_entry_count
-      AND CAST(bb.entry_date_time AS TIMESTAMP) <= us.sell_time
-      AND bb.history_id NOT IN (SELECT buy_history_id FROM ${TABLE.TRADE_MATCHED})
-  )
-  SELECT account_id, account_name,
-    STRFTIME(sell_time, '%Y') as year, STRFTIME(sell_time, '%Y-%m') as month,
-    code, name,
-    sell_entry_price, buy_entry_price,
-    sell_entry_count, buy_entry_count,
-    sell_entry_money, buy_entry_money,
-    sell_transfer_fee, buy_transfer_fee,
-    profit, sell_time, buy_time,
-    sell_history_id, buy_history_id
-  FROM ranked_matches
-  WHERE sell_rank = 1 AND buy_rank = 1;`;
+// 网格交易最大持有天数
+const GRID_MAX_DAYS = 60;
 
 /**
- * 查询未匹配买入记录
+ * 交易匹配 SQL - 网格专用算法
+ * 匹配逻辑：
+ * 1. 时间窗口限制：买入和卖出间隔不超过 GRID_MAX_DAYS 天
+ * 2. 价格接近优先：买入价和卖出价越接近，优先匹配
+ * 3. 排除已匹配记录
+ */
+export const TRADE_MATCH_GRID = `
+  INSERT INTO ${TABLE.TRADE_MATCHED}
+  SELECT
+    t.account_id, t.account_name,
+    STRFTIME(t.sell_time, '%Y'), STRFTIME(t.sell_time, '%Y-%m'),
+    t.code, t.name,
+    t.sell_entry_price, t.buy_entry_price,
+    t.sell_entry_count, t.buy_entry_count,
+    t.sell_entry_money, t.buy_entry_money,
+    t.sell_transfer_fee, t.buy_transfer_fee,
+    t.sell_moneychg - t.buy_moneychg,
+    t.sell_time, t.buy_time,
+    t.sell_history_id, t.buy_history_id
+  FROM (
+    SELECT *,
+      ROW_NUMBER() OVER (PARTITION BY t.sell_history_id ORDER BY t.price_diff) AS sell_seq,
+      ROW_NUMBER() OVER (PARTITION BY t.buy_history_id ORDER BY t.price_diff) AS buy_seq
+    FROM (
+      SELECT
+        t1.account_id, t1.account_name, t1.code, t1.name,
+        t1.entry_price AS sell_entry_price, t2.entry_price AS buy_entry_price,
+        t1.entry_count AS sell_entry_count, t2.entry_count AS buy_entry_count,
+        t1.entry_money AS sell_entry_money, t2.entry_money AS buy_entry_money,
+        t1.transfer_fee AS sell_transfer_fee, t2.transfer_fee AS buy_transfer_fee,
+        t1.moneychg AS sell_moneychg, t2.moneychg AS buy_moneychg,
+        t1.entry_date_time AS sell_time, t2.entry_date_time AS buy_time,
+        t1.history_id AS sell_history_id, t2.history_id AS buy_history_id,
+        -- 计算持有天数（DuckDB: date_diff 返回整数天数）
+        date_diff('day', t2.entry_date_time, t1.entry_date_time) AS days_diff,
+        ABS(t1.entry_price - t2.entry_price) AS price_diff
+      FROM (
+        SELECT
+          t.account_id, t.account_name, t.code, t.name,
+          t.entry_price, t.entry_count, t.entry_money, t.transfer_fee,
+          IF(t.entry_money = t.transfer_fee, t.entry_money, t.entry_money - t.transfer_fee) AS moneychg,
+          CAST(t.entry_date_time AS TIMESTAMP) AS entry_date_time,
+          t.history_id
+        FROM ${TABLE.TRADE_RECORD} t WHERE t.op = ${OP.SELL}
+      ) t1
+      INNER JOIN (
+        SELECT
+          t.account_id, t.account_name, t.code, t.name,
+          t.entry_price, t.entry_count, t.entry_money, t.transfer_fee,
+          IF(t.entry_money = t.transfer_fee, t.entry_money, t.entry_money + t.transfer_fee) AS moneychg,
+          CAST(t.entry_date_time AS TIMESTAMP) AS entry_date_time,
+          t.history_id
+        FROM ${TABLE.TRADE_RECORD} t WHERE t.op = ${OP.BUY}
+      ) t2
+      ON t2.account_id = t1.account_id AND t2.code = t1.code
+         AND t2.entry_count = t1.entry_count
+         -- 买入时间早于卖出时间，且不超过时间窗口
+         AND t2.entry_date_time <= t1.entry_date_time
+         AND (t1.entry_date_time - t2.entry_date_time) <= INTERVAL '${GRID_MAX_DAYS} days'
+    ) t
+    -- 排除已匹配的记录（卖出和买入都要排除，避免同一买入被多个卖出重复使用）
+    LEFT JOIN (SELECT sell_history_id FROM ${TABLE.TRADE_MATCHED}) t2 ON t2.sell_history_id = t.sell_history_id
+    LEFT JOIN (SELECT buy_history_id FROM ${TABLE.TRADE_MATCHED}) t3 ON t3.buy_history_id = t.buy_history_id
+    WHERE t2.sell_history_id IS NULL AND t3.buy_history_id IS NULL
+  ) t
+  -- 双向约束：卖出只选价格最接近的买入，且该买入也只被它选为最接近（保证一对一）
+  WHERE t.sell_seq = 1 AND t.buy_seq = 1;`;
+
+/**
+ * 查询未匹配记录
+ */
+export const QUERY_UNMATCHED = `
+  SELECT 
+    r.account_name, r.code, r.name, r.op_name,
+    r.entry_price, r.entry_count, r.entry_money,
+    r.entry_date, r.entry_time,
+    '未匹配' as status
+  FROM ${TABLE.TRADE_RECORD} r
+  LEFT JOIN ${TABLE.TRADE_MATCHED} m ON r.history_id = m.buy_history_id
+  WHERE m.buy_history_id IS NULL AND r.op = ${OP.BUY}
+  UNION ALL
+  SELECT 
+    r.account_name, r.code, r.name, r.op_name,
+    r.entry_price, r.entry_count, r.entry_money,
+    r.entry_date, r.entry_time,
+    '未匹配' as status
+  FROM ${TABLE.TRADE_RECORD} r
+  LEFT JOIN ${TABLE.TRADE_MATCHED} m ON r.history_id = m.sell_history_id
+  WHERE m.sell_history_id IS NULL AND r.op = ${OP.SELL}`;
+
+/**
+ * 统计未匹配记录
+ */
+export const QUERY_UNMATCHED_COUNT = `
+  SELECT 
+    (SELECT COUNT(*) FROM ${TABLE.TRADE_RECORD} r
+     LEFT JOIN ${TABLE.TRADE_MATCHED} m ON r.history_id = m.buy_history_id
+     WHERE m.buy_history_id IS NULL AND op = ${OP.BUY}) as buy_unmatched,
+    (SELECT COUNT(*) FROM ${TABLE.TRADE_RECORD} r
+     LEFT JOIN ${TABLE.TRADE_MATCHED} m ON r.history_id = m.sell_history_id
+     WHERE m.sell_history_id IS NULL AND op = ${OP.SELL}) as sell_unmatched`;
+
+/**
+ * 查询未匹配买入记录（拆分版，供 getUnmatchedBuys 使用）
  */
 export const QUERY_UNMATCHED_BUY = `
   SELECT 
@@ -65,7 +127,7 @@ export const QUERY_UNMATCHED_BUY = `
   ORDER BY r.entry_date, r.entry_time`;
 
 /**
- * 查询未匹配卖出记录
+ * 查询未匹配卖出记录（拆分版，供 getUnmatchedSells 使用）
  */
 export const QUERY_UNMATCHED_SELL = `
   SELECT 

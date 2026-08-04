@@ -3,7 +3,7 @@ import { join } from "path";
 import { getDataDir } from "./utils.js";
 import { CREATE_DICT, CREATE_TRADE_RECORD, CREATE_TRADE_MATCHED } from "./sql-schema.js";
 import { INSERT_ACCOUNT, INSERT_TRADE } from "./sql-sync.js";
-import { TRADE_MATCH } from "./sql-match.js";
+import { TRADE_MATCH_GRID } from "./sql-match.js";
 import { GRID_PROFIT } from "./sql-profit.js";
 
 process.noDeprecation = true;
@@ -133,7 +133,7 @@ export const SQL = {
   CREATE_DICT,
   CREATE_TRADE_RECORD,
   CREATE_TRADE_MATCHED,
-  TRADE_MATCH,
+  TRADE_MATCH_GRID,
   GRID_PROFIT,
 };
 
