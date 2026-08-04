@@ -51,10 +51,10 @@ bun install -g @jackwener/opencli
 
 ```bash
 # 克隆仓库
-git clone https://github.com/fhn100/stock-skill.git ~/.claude/skills/stock-skill
+git clone https://github.com/fhn100/stock-skill.git ~/Workspace/personal/stock-skill
 
 # 复制插件到 opencli 插件目录
-cp -r ~/.claude/skills/stock-skill/resources/stock ~/.opencli/plugins/stock
+cp -r ~/Workspace/personal/stock-skill/resources/stock ~/.opencli/plugins/stock
 
 # 安装插件依赖
 cd ~/.opencli/plugins/stock && npm install
@@ -63,7 +63,7 @@ cd ~/.opencli/plugins/stock && npm install
 ### 安装脚本依赖
 
 ```bash
-cd ~/.claude/skills/stock-skill/scripts && npm install
+cd ~/Workspace/personal/stock-skill/scripts && npm install
 ```
 
 ## 快速开始
@@ -75,7 +75,7 @@ cd ~/.claude/skills/stock-skill/scripts && npm install
 opencli stock init
 
 # 2. 初始化数据库
-cd ~/.claude/skills/stock-skill/scripts && node init-db.js
+cd ~/Workspace/personal/stock-skill/scripts && node init-db.js
 
 # 3. 同步交易记录
 node sync.js 20250101 20260627
@@ -90,7 +90,7 @@ node profit.js
 ### 日常使用
 
 ```bash
-cd ~/.claude/skills/stock-skill/scripts
+cd ~/Workspace/personal/stock-skill/scripts
 
 # 同步当月数据
 node sync.js
@@ -122,7 +122,7 @@ node quotes.js
 |------|------|
 | 数据库 | `~/.duckdb/stock/stock.db` |
 | 配置文件 | `~/.duckdb/stock/config` |
-| 脚本目录 | `~/.claude/skills/stock-skill/scripts/` |
+| 脚本目录 | `~/Workspace/personal/stock-skill/scripts/` |
 
 ## 数据库表结构
 
@@ -175,7 +175,7 @@ opencli stock init
 cp ~/.duckdb/stock/stock.db ~/.duckdb/stock/stock.db.bak
 
 # 重新初始化
-cd ~/.claude/skills/stock-skill/scripts && node init-db.js
+cd ~/Workspace/personal/stock-skill/scripts && node init-db.js
 
 # 重新同步
 node sync.js 20250101 $(date +%Y%m%d)
@@ -205,9 +205,8 @@ node match.js 20250101 $(date +%Y%m%d)
 
 ```
 stock-skill/
-├── SKILL.md           # Claude Code 技能定义
+├── SKILL.md           # 技能定义
 ├── README.md          # 本文档
-├── package.json       # 包配置
 ├── resources/
 │   └── stock/         # opencli 插件
 │       ├── init.js    # Cookie 获取脚本
@@ -226,14 +225,15 @@ stock-skill/
 │   ├── sync.js        # 交易同步
 │   ├── match.js       # 交易匹配
 │   ├── profit.js      # 收益查询
-│   └── quotes.js      # 行情查询
+│   ├── quotes.js      # 行情查询
+│   └── unmatched.js   # 未匹配查询
 └── test-prompts.json  # 测试用例
 ```
 
 ### 运行测试
 
 ```bash
-cd ~/.claude/skills/stock-skill/scripts
+cd ~/Workspace/personal/stock-skill/scripts
 
 # 测试同步
 node sync.js 20260601 20260630

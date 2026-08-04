@@ -26,15 +26,6 @@ export function getConfigPath() {
 }
 
 /**
- * 写入配置文件
- * @param {string} config - 配置内容
- */
-export function writeConfig(config) {
-  const path = getConfigPath();
-  fs.writeFileSync(path, config, 'utf8');
-}
-
-/**
  * 读取 Cookie（未配置时抛异常）
  * @returns {string} Cookie 字符串
  * @throws {Error} 配置文件为空时抛出

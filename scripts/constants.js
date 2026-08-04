@@ -58,7 +58,6 @@ export const COOKIE_EXPIRY_SECONDS = 86400;
 // ============================ 同步与匹配 ============================
 
 export const SYNC_CONCURRENCY = 3;
-export const MATCH_MAX_ITERATIONS = 100;
 
 // ============================ 网络请求 ============================
 
