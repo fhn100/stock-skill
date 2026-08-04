@@ -77,53 +77,6 @@ export const TRADE_MATCH_GRID = `
   WHERE t.sell_seq = 1 AND t.buy_seq = 1;`;
 
 /**
- * 查询未匹配记录
- */
-export const QUERY_UNMATCHED = `
-  SELECT 
-    r.account_name, r.code, r.name, r.op_name,
-    r.entry_price, r.entry_count, r.entry_money,
-    r.entry_date, r.entry_time,
-    '未匹配' as status
-  FROM ${TABLE.TRADE_RECORD} r
-  LEFT JOIN ${TABLE.TRADE_MATCHED} m ON r.history_id = m.buy_history_id
-  WHERE m.buy_history_id IS NULL AND r.op = ${OP.BUY}
-  UNION ALL
-  SELECT 
-    r.account_name, r.code, r.name, r.op_name,
-    r.entry_price, r.entry_count, r.entry_money,
-    r.entry_date, r.entry_time,
-    '未匹配' as status
-  FROM ${TABLE.TRADE_RECORD} r
-  LEFT JOIN ${TABLE.TRADE_MATCHED} m ON r.history_id = m.sell_history_id
-  WHERE m.sell_history_id IS NULL AND r.op = ${OP.SELL}`;
-
-/**
- * 统计未匹配记录
- */
-export const QUERY_UNMATCHED_COUNT = `
-  SELECT 
-    (SELECT COUNT(*) FROM ${TABLE.TRADE_RECORD} r
-     LEFT JOIN ${TABLE.TRADE_MATCHED} m ON r.history_id = m.buy_history_id
-     WHERE m.buy_history_id IS NULL AND op = ${OP.BUY}) as buy_unmatched,
-    (SELECT COUNT(*) FROM ${TABLE.TRADE_RECORD} r
-     LEFT JOIN ${TABLE.TRADE_MATCHED} m ON r.history_id = m.sell_history_id
-     WHERE m.sell_history_id IS NULL AND op = ${OP.SELL}) as sell_unmatched`;
-
-/**
- * 查询未匹配买入记录（拆分版，供 getUnmatchedBuys 使用）
- */
-export const QUERY_UNMATCHED_BUY = `
-  SELECT 
-    r.account_name, r.code, r.name, r.op_name,
-    r.entry_price, r.entry_count, r.entry_money,
-    r.entry_date, r.entry_time
-  FROM ${TABLE.TRADE_RECORD} r
-  LEFT JOIN ${TABLE.TRADE_MATCHED} m ON r.history_id = m.buy_history_id
-  WHERE m.buy_history_id IS NULL AND r.op = ${OP.BUY}
-  ORDER BY r.entry_date, r.entry_time`;
-
-/**
  * 反向匹配 SQL - 网格专用算法（先卖后买，做空交易）
  * 匹配逻辑：
  * 1. 时间最近优先：持有天数越短越优先（买入时间 - 卖出时间 ASC）
@@ -193,16 +146,3 @@ export const TRADE_MATCH_GRID_REVERSE = `
   ) t
   -- 双向约束：卖出只选持有天数最短的买入，且该买入也只被它选为最短
   WHERE t.sell_seq = 1 AND t.buy_seq = 1;`;
-
-/**
- * 查询未匹配卖出记录（拆分版，供 getUnmatchedSells 使用）
- */
-export const QUERY_UNMATCHED_SELL = `
-  SELECT 
-    r.account_name, r.code, r.name, r.op_name,
-    r.entry_price, r.entry_count, r.entry_money,
-    r.entry_date, r.entry_time
-  FROM ${TABLE.TRADE_RECORD} r
-  LEFT JOIN ${TABLE.TRADE_MATCHED} m ON r.history_id = m.sell_history_id
-  WHERE m.sell_history_id IS NULL AND r.op = ${OP.SELL}
-  ORDER BY r.entry_date, r.entry_time`;

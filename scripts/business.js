@@ -4,12 +4,9 @@
  */
 
 import { withDb } from "./db.js";
-import { TABLE, OP, PAGE_SIZE, API_BASE, API_PATH, HTTP_HEADERS, API_DEFAULTS, DICT_TYPE, SYNC_CONCURRENCY } from "./constants.js";
+import { TABLE, PAGE_SIZE, API_BASE, API_PATH, HTTP_HEADERS, API_DEFAULTS, DICT_TYPE, SYNC_CONCURRENCY } from "./constants.js";
 import { getCookie, getUserId, checkCookieValid } from "./utils.js";
-import { 
-  QUERY_UNMATCHED_BUY, QUERY_UNMATCHED_SELL
-} from "./sql-match.js";
-import { 
+import {
   GRID_PROFIT
 } from "./sql-profit.js";
 import {
@@ -324,60 +321,5 @@ export async function tradeMatchReverse() {
 export async function gridProfit(startMonth = '2026-01', endMonth = '2026-12') {
   return await withDb(async (conn) => {
     return await conn.all(GRID_PROFIT, [endMonth, startMonth, endMonth, startMonth.substring(0, 4)]);
-  });
-}
-
-/**
- * 查询股票交易明细
- * @param {string} code - 股票代码
- * @param {string} startDate - 开始日期
- * @param {string} endDate - 结束日期
- */
-export async function getTradeDetails(code, startDate = '', endDate = '') {
-  return await withDb(async (conn) => {
-    let sql = `
-      SELECT 
-        r.account_name, r.code, r.name, r.op,
-        r.entry_price, r.entry_count, r.entry_money, r.transfer_fee,
-        r.entry_date, r.entry_time,
-        m.profit as match_profit
-      FROM t_trade_record r
-      LEFT JOIN t_trade_matched_record m ON r.history_id = m.buy_history_id OR r.history_id = m.sell_history_id
-      WHERE r.code = ?
-    `;
-    
-    const params = [code];
-    
-    if (startDate) {
-      sql += ' AND r.entry_date >= ?';
-      params.push(startDate);
-    }
-    
-    if (endDate) {
-      sql += ' AND r.entry_date <= ?';
-      params.push(endDate);
-    }
-    
-    sql += ' ORDER BY r.entry_date, r.entry_time';
-    
-    return await conn.all(sql, params);
-  });
-}
-
-/**
- * 查询未匹配买入记录
- */
-export async function getUnmatchedBuys() {
-  return await withDb(async (conn) => {
-    return await conn.all(QUERY_UNMATCHED_BUY);
-  });
-}
-
-/**
- * 查询未匹配卖出记录
- */
-export async function getUnmatchedSells() {
-  return await withDb(async (conn) => {
-    return await conn.all(QUERY_UNMATCHED_SELL);
   });
 }
