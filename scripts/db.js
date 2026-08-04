@@ -68,7 +68,7 @@ class DatabaseManager {
    * 执行语句（INSERT/UPDATE/DELETE）
    * @param {string} sql - SQL 语句
    * @param {Array} params - 参数
-   * @returns {Promise<object>} 执行结果（含 rowsAffected）
+   * @returns {Promise<object>} 执行结果（含 rowsChanged）
    */
   async run(sql, params = []) {
     const conn = await this.getConnection();

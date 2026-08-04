@@ -272,7 +272,8 @@ export async function tradeMatch() {
 
     while (iterations < MAX_ITERATIONS) {
       const result = await conn.run(SQL.TRADE_MATCH_GRID);
-      const affected = result?.rowsAffected || 0;
+      // @duckdb/node-api 的 run() 返回 DuckDBMaterializedResult，行数为 rowsChanged（rowsAffected 不存在）
+      const affected = result?.rowsChanged || 0;
       if (affected === 0) break;
       total += affected;
       iterations++;
