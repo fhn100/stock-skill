@@ -259,11 +259,11 @@ export async function syncTrade(startDate, endDate, concurrency = SYNC_CONCURREN
 // ============================ 交易匹配 ============================
 
 /**
- * 最大覆盖贪心匹配（仅正向：先买后卖；仅盈利：净额）
+ * 最短持有匹配（时间差最小优先，LIFO）
  * 每组 (account_id, code, entry_count) 内独立匹配：
  * 卖出按时间升序处理，可用买入 = 未匹配且 time <= 卖出时间的买入；
- * 每次配对取净额最大且小于卖出净额的买入。
- * 该贪心对二维支配（时间 + 价格）最大基数匹配最优（交换论证）。
+ * 每次配对取买入时间最新（卖出时间 - 买入时间差最小）且盈利
+ * （matchMoney < 卖出 matchMoney）的买入。
  *
  * @param {Array} buys - 未匹配买入记录
  * @param {Array} sells - 未匹配卖出记录
@@ -291,47 +291,28 @@ function greedyMatch(buys, sells) {
     gBuys.sort((a, b) => a.entry_ts.getTime() - b.entry_ts.getTime() || a.history_id.localeCompare(b.history_id));
     gSells.sort((a, b) => a.entry_ts.getTime() - b.entry_ts.getTime() || a.history_id.localeCompare(b.history_id));
 
-    // 可用买入按 netMoney 升序维护，支持"取最大且 < 阈值"
     const avail = [];
     let bi = 0;
     for (const sell of gSells) {
       while (bi < gBuys.length && gBuys[bi].entry_ts.getTime() <= sell.entry_ts.getTime()) {
-        insertSortedByMoney(avail, gBuys[bi]);
+        avail.push(gBuys[bi]);
         bi++;
       }
-      // 二分找最大 matchMoney < sell.matchMoney
-      const idx = lowerBoundByMoney(avail, sell.matchMoney) - 1;
-      if (idx >= 0) {
-        pairs.push({ buy: avail.splice(idx, 1)[0], sell });
+      // 找买入时间最新（时间差最小）且盈利的买入
+      let best = -1;
+      let bestTime = -Infinity;
+      for (let i = 0; i < avail.length; i++) {
+        if (avail[i].matchMoney < sell.matchMoney && avail[i].entry_ts.getTime() > bestTime) {
+          best = i;
+          bestTime = avail[i].entry_ts.getTime();
+        }
+      }
+      if (best >= 0) {
+        pairs.push({ buy: avail.splice(best, 1)[0], sell });
       }
     }
   }
   return pairs;
-}
-
-/** 按 matchMoney 升序插入（并列按 entry_ts 升序，保持确定性） */
-function insertSortedByMoney(arr, item) {
-  let lo = 0;
-  let hi = arr.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1;
-    const cmp = arr[mid].matchMoney - item.matchMoney;
-    if (cmp < 0 || (cmp === 0 && arr[mid].entry_ts.getTime() <= item.entry_ts.getTime())) lo = mid + 1;
-    else hi = mid;
-  }
-  arr.splice(lo, 0, item);
-}
-
-/** 二分：第一个 matchMoney >= threshold 的下标 */
-function lowerBoundByMoney(arr, threshold) {
-  let lo = 0;
-  let hi = arr.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1;
-    if (arr[mid].matchMoney < threshold) lo = mid + 1;
-    else hi = mid;
-  }
-  return lo;
 }
 
 /** 格式化 Date → 'YYYY-MM-DD HH:MM:SS'（DuckDB TIMESTAMP 绑定用） */
@@ -341,7 +322,7 @@ function fmtDateTime(d) {
 }
 
 /**
- * 匹配交易记录（最大覆盖贪心，单遍完成，无需迭代）
+ * 匹配交易记录（最短持有 / 时间差最小，单遍完成，无需迭代）
  * 净额 = entry_money ∓ (commission + transfer_fee)
  * @param {Object} [opts]
  * @param {boolean} [opts.netFilter=true] - 盈利判定用净额还是毛额
