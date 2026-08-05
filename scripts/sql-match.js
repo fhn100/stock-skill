@@ -1,148 +1,44 @@
 /**
  * SQL 交易匹配相关定义
- * 使用网格交易匹配算法：
- * 优先匹配时间最近的买入，排除已匹配记录
+ * 匹配算法在 business.js tradeMatch 中实现（最大覆盖贪心，JS 侧）
+ * 此文件仅提供：加载未匹配交易、插入匹配结果
  */
 
 import { TABLE, OP } from "./constants.js";
 
 /**
- * 交易匹配 SQL - 网格专用算法
- * 匹配逻辑：
- * 1. 时间最近优先：持有天数越短越优先（卖出时间 - 买入时间 ASC）
- * 2. 排除已匹配记录
- * 3. 买入金额小于卖出金额（盈利匹配）
+ * 加载未匹配交易记录（排除已匹配）
+ * 返回全部未匹配买卖，供 JS 侧按 (account_id, code, entry_count) 分组贪心匹配
  */
-export const TRADE_MATCH_GRID = `
-  INSERT INTO ${TABLE.TRADE_MATCHED}
+export const LOAD_UNMATCHED_TRADES = `
   SELECT
+    t.history_id,
     t.account_id, t.account_name,
-    STRFTIME(t.sell_time, '%Y'), STRFTIME(t.sell_time, '%Y-%m'),
     t.code, t.name,
-    t.sell_entry_price, t.buy_entry_price,
-    t.sell_entry_count, t.buy_entry_count,
-    t.sell_entry_money, t.buy_entry_money,
-    t.sell_transfer_fee, t.buy_transfer_fee,
-    t.sell_moneychg - t.buy_moneychg,
-    t.sell_time, t.buy_time,
-    t.sell_history_id, t.buy_history_id
-  FROM (
-    SELECT *,
-      ROW_NUMBER() OVER (PARTITION BY t.sell_history_id ORDER BY t.days_diff ASC, t.buy_time ASC, t.buy_history_id ASC) AS sell_seq,
-      ROW_NUMBER() OVER (PARTITION BY t.buy_history_id ORDER BY t.days_diff ASC, t.sell_time ASC, t.sell_history_id ASC) AS buy_seq
-    FROM (
-      SELECT
-        t1.account_id, t1.account_name, t1.code, t1.name,
-        t1.entry_price AS sell_entry_price, t2.entry_price AS buy_entry_price,
-        t1.entry_count AS sell_entry_count, t2.entry_count AS buy_entry_count,
-        t1.entry_money AS sell_entry_money, t2.entry_money AS buy_entry_money,
-        t1.transfer_fee AS sell_transfer_fee, t2.transfer_fee AS buy_transfer_fee,
-        t1.moneychg AS sell_moneychg, t2.moneychg AS buy_moneychg,
-        t1.entry_date_time AS sell_time, t2.entry_date_time AS buy_time,
-        t1.history_id AS sell_history_id, t2.history_id AS buy_history_id,
-        -- 计算持有天数（DuckDB: date_diff 返回整数天数）
-        date_diff('day', t2.entry_date_time, t1.entry_date_time) AS days_diff,
-        ABS(t1.entry_price - t2.entry_price) AS price_diff
-      FROM (
-        SELECT
-          t.account_id, t.account_name, t.code, t.name,
-          t.entry_price, t.entry_count, t.entry_money, t.transfer_fee,
-          IF(t.entry_money = t.transfer_fee, t.entry_money, t.entry_money - t.transfer_fee) AS moneychg,
-          CAST(t.entry_date_time AS TIMESTAMP) AS entry_date_time,
-          t.history_id
-        FROM ${TABLE.TRADE_RECORD} t WHERE t.op = ${OP.SELL}
-      ) t1
-      INNER JOIN (
-        SELECT
-          t.account_id, t.account_name, t.code, t.name,
-          t.entry_price, t.entry_count, t.entry_money, t.transfer_fee,
-          IF(t.entry_money = t.transfer_fee, t.entry_money, t.entry_money + t.transfer_fee) AS moneychg,
-          CAST(t.entry_date_time AS TIMESTAMP) AS entry_date_time,
-          t.history_id
-        FROM ${TABLE.TRADE_RECORD} t WHERE t.op = ${OP.BUY}
-      ) t2
-      ON t2.account_id = t1.account_id AND t2.code = t1.code
-         AND t2.entry_count = t1.entry_count
-         -- 买入时间早于卖出时间
-         AND t2.entry_date_time <= t1.entry_date_time
-         -- 买入金额小于卖出金额（盈利匹配）
-         AND t2.entry_money < t1.entry_money
-    ) t
-    -- 排除已匹配的记录（卖出和买入都要排除，避免同一买入被多个卖出重复使用）
-    LEFT JOIN (SELECT sell_history_id FROM ${TABLE.TRADE_MATCHED}) t2 ON t2.sell_history_id = t.sell_history_id
-    LEFT JOIN (SELECT buy_history_id FROM ${TABLE.TRADE_MATCHED}) t3 ON t3.buy_history_id = t.buy_history_id
-    WHERE t2.sell_history_id IS NULL AND t3.buy_history_id IS NULL
-  ) t
-  -- 双向约束：卖出只选持有天数最短的买入，且该买入也只被它选为最短（保证一对一）
-  WHERE t.sell_seq = 1 AND t.buy_seq = 1;`;
+    t.op,
+    CAST(t.entry_price AS DOUBLE) AS entry_price,
+    CAST(t.entry_count AS INTEGER) AS entry_count,
+    CAST(t.entry_money AS DOUBLE) AS entry_money,
+    CAST(t.commission AS DOUBLE) AS commission,
+    CAST(t.transfer_fee AS DOUBLE) AS transfer_fee,
+    CAST(t.entry_date_time AS TIMESTAMP) AS entry_ts
+  FROM ${TABLE.TRADE_RECORD} t
+  WHERE t.op IN ('${OP.BUY}', '${OP.SELL}')
+    AND CAST(t.entry_count AS INTEGER) > 0
+    AND t.history_id NOT IN (
+      SELECT sell_history_id FROM ${TABLE.TRADE_MATCHED}
+      UNION ALL
+      SELECT buy_history_id FROM ${TABLE.TRADE_MATCHED}
+    )`;
 
 /**
- * 反向匹配 SQL - 网格专用算法（先卖后买，做空交易）
- * 匹配逻辑：
- * 1. 时间最近优先：持有天数越短越优先（买入时间 - 卖出时间 ASC）
- * 2. 排除已匹配记录
- * 3. 买入金额小于卖出金额（盈利匹配）
- * 4. 买入时间 >= 卖出时间（先卖后买）
+ * 插入匹配结果
+ * profit = 卖出净额 - 买入净额（净额含佣金与过户费）
  */
-export const TRADE_MATCH_GRID_REVERSE = `
+export const INSERT_MATCHED = `
   INSERT INTO ${TABLE.TRADE_MATCHED}
-  SELECT
-    t.account_id, t.account_name,
-    STRFTIME(t.sell_time, '%Y'), STRFTIME(t.sell_time, '%Y-%m'),
-    t.code, t.name,
-    t.sell_entry_price, t.buy_entry_price,
-    t.sell_entry_count, t.buy_entry_count,
-    t.sell_entry_money, t.buy_entry_money,
-    t.sell_transfer_fee, t.buy_transfer_fee,
-    t.sell_moneychg - t.buy_moneychg,
-    t.sell_time, t.buy_time,
-    t.sell_history_id, t.buy_history_id
-  FROM (
-    SELECT *,
-      ROW_NUMBER() OVER (PARTITION BY t.sell_history_id ORDER BY t.days_diff ASC, t.buy_time ASC, t.buy_history_id ASC) AS sell_seq,
-      ROW_NUMBER() OVER (PARTITION BY t.buy_history_id ORDER BY t.days_diff ASC, t.sell_time ASC, t.sell_history_id ASC) AS buy_seq
-    FROM (
-      SELECT
-        t1.account_id, t1.account_name, t1.code, t1.name,
-        t1.entry_price AS sell_entry_price, t2.entry_price AS buy_entry_price,
-        t1.entry_count AS sell_entry_count, t2.entry_count AS buy_entry_count,
-        t1.entry_money AS sell_entry_money, t2.entry_money AS buy_entry_money,
-        t1.transfer_fee AS sell_transfer_fee, t2.transfer_fee AS buy_transfer_fee,
-        t1.moneychg AS sell_moneychg, t2.moneychg AS buy_moneychg,
-        t1.entry_date_time AS sell_time, t2.entry_date_time AS buy_time,
-        t1.history_id AS sell_history_id, t2.history_id AS buy_history_id,
-        -- 计算持有天数（DuckDB: date_diff 返回整数天数）
-        date_diff('day', t1.entry_date_time, t2.entry_date_time) AS days_diff,
-        ABS(t1.entry_price - t2.entry_price) AS price_diff
-      FROM (
-        SELECT
-          t.account_id, t.account_name, t.code, t.name,
-          t.entry_price, t.entry_count, t.entry_money, t.transfer_fee,
-          IF(t.entry_money = t.transfer_fee, t.entry_money, t.entry_money - t.transfer_fee) AS moneychg,
-          CAST(t.entry_date_time AS TIMESTAMP) AS entry_date_time,
-          t.history_id
-        FROM ${TABLE.TRADE_RECORD} t WHERE t.op = ${OP.SELL}
-      ) t1
-      INNER JOIN (
-        SELECT
-          t.account_id, t.account_name, t.code, t.name,
-          t.entry_price, t.entry_count, t.entry_money, t.transfer_fee,
-          IF(t.entry_money = t.transfer_fee, t.entry_money, t.entry_money + t.transfer_fee) AS moneychg,
-          CAST(t.entry_date_time AS TIMESTAMP) AS entry_date_time,
-          t.history_id
-        FROM ${TABLE.TRADE_RECORD} t WHERE t.op = ${OP.BUY}
-      ) t2
-      ON t2.account_id = t1.account_id AND t2.code = t1.code
-         AND t2.entry_count = t1.entry_count
-         -- 买入时间晚于卖出时间（先卖后买，做空）
-         AND t2.entry_date_time >= t1.entry_date_time
-         -- 买入金额小于卖出金额（盈利匹配）
-         AND t2.entry_money < t1.entry_money
-    ) t
-    -- 排除已匹配的记录（卖出和买入都要排除）
-    LEFT JOIN (SELECT sell_history_id FROM ${TABLE.TRADE_MATCHED}) t2 ON t2.sell_history_id = t.sell_history_id
-    LEFT JOIN (SELECT buy_history_id FROM ${TABLE.TRADE_MATCHED}) t3 ON t3.buy_history_id = t.buy_history_id
-    WHERE t2.sell_history_id IS NULL AND t3.buy_history_id IS NULL
-  ) t
-  -- 双向约束：卖出只选持有天数最短的买入，且该买入也只被它选为最短
-  WHERE t.sell_seq = 1 AND t.buy_seq = 1;`;
+    (account_id, account_name, trans_year, trans_month, code, name,
+     sell_entry_price, buy_entry_price, sell_entry_count, buy_entry_count,
+     sell_entry_money, buy_entry_money, sell_transfer_fee, buy_transfer_fee,
+     profit, sell_time, buy_time, sell_history_id, buy_history_id)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
