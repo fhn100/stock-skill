@@ -6,7 +6,7 @@
 
 - 🍪 **Cookie 获取**：通过浏览器自动获取 Cookie
 - 📊 **数据同步**：自动分页同步交易记录
-- 🔗 **交易匹配**：自动匹配买卖记录
+- 🔗 **交易匹配**：自动匹配买卖记录（时间差最小优先，仅盈利配对）
 - 💰 **收益统计**：查询网格收益
 - 📈 **实时行情**：获取持仓实时行情
 
@@ -180,7 +180,8 @@ cd ~/Workspace/personal/stock-skill/scripts && node init-db.js
 # 重新同步
 node sync.js 20250101 $(date +%Y%m%d)
 
-# 重新匹配
+# 重新匹配（算法/数据变更后，先清空匹配表再重跑，否则旧配对不会重算）
+duckdb ~/.duckdb/stock/stock.db -c "DELETE FROM t_trade_matched_record;"
 node match.js 20250101 $(date +%Y%m%d)
 ```
 
@@ -225,8 +226,7 @@ stock-skill/
 │   ├── sync.js        # 交易同步
 │   ├── match.js       # 交易匹配
 │   ├── profit.js      # 收益查询
-│   ├── quotes.js      # 行情查询
-│   └── unmatched.js   # 未匹配查询
+│   └── quotes.js      # 行情查询
 └── test-prompts.json  # 测试用例
 ```
 
