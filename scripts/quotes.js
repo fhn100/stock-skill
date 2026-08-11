@@ -6,13 +6,6 @@
  * accountName: 账户名称关键词（可选）
  */
 
-import { fileURLToPath } from "url";
-import { dirname } from "path";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
-// 导入核心模块
 import { getQuotes } from "./quotes-api.js";
 
 // 解析命令行参数

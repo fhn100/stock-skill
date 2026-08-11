@@ -6,13 +6,6 @@
  * 日期格式: YYYYMMDD，默认当月
  */
 
-import { fileURLToPath } from "url";
-import { dirname } from "path";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
-// 导入核心模块
 import { syncTrade, tradeMatch } from "./business.js";
 import { resolveDateRange } from "./utils.js";
 

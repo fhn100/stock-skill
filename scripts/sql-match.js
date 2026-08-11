@@ -8,7 +8,7 @@ import { TABLE, OP } from "./constants.js";
 
 /**
  * 加载未匹配交易记录（排除已匹配）
- * 返回全部未匹配买卖，供 JS 侧按 (account_id, code, entry_count) 分组贪心匹配
+ * 使用 LEFT JOIN 替代 NOT IN，避免 NULL 值陷阱且性能更好
  */
 export const LOAD_UNMATCHED_TRADES = `
   SELECT
@@ -21,15 +21,15 @@ export const LOAD_UNMATCHED_TRADES = `
     CAST(t.entry_money AS DOUBLE) AS entry_money,
     CAST(t.commission AS DOUBLE) AS commission,
     CAST(t.transfer_fee AS DOUBLE) AS transfer_fee,
-    CAST(t.entry_date_time AS TIMESTAMP) AS entry_ts
+    CAST(t.entry_date_time AS TIMESTAMP WITH TIME ZONE) AS entry_ts
   FROM ${TABLE.TRADE_RECORD} t
+  LEFT JOIN ${TABLE.TRADE_MATCHED} m1 ON t.history_id = m1.sell_history_id
+  LEFT JOIN ${TABLE.TRADE_MATCHED} m2 ON t.history_id = m2.buy_history_id
   WHERE t.op IN ('${OP.BUY}', '${OP.SELL}')
     AND CAST(t.entry_count AS INTEGER) > 0
-    AND t.history_id NOT IN (
-      SELECT sell_history_id FROM ${TABLE.TRADE_MATCHED}
-      UNION ALL
-      SELECT buy_history_id FROM ${TABLE.TRADE_MATCHED}
-    )`;
+    AND m1.sell_history_id IS NULL
+    AND m2.buy_history_id IS NULL
+`;
 
 /**
  * 插入匹配结果
@@ -41,4 +41,5 @@ export const INSERT_MATCHED = `
      sell_entry_price, buy_entry_price, sell_entry_count, buy_entry_count,
      sell_entry_money, buy_entry_money, sell_transfer_fee, buy_transfer_fee,
      profit, sell_time, buy_time, sell_history_id, buy_history_id)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`;

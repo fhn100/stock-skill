@@ -10,7 +10,7 @@ category: finance
 
 ## 脚本目录
 
-`~/Workspace/personal/stock-skill/scripts/`
+`~/.agents/skills/stock-skill/scripts/`
 
 ## 功能概览
 
@@ -22,6 +22,8 @@ category: finance
 | 交易记录匹配 | `node match.js [start] [end]` | 匹配买入/卖出记录 |
 | 收益统计 | `node profit.js [startMonth] [endMonth]` | 查询网格收益 |
 | 实时行情 | `node quotes.js [account]` | 获取持仓实时行情 |
+| 账户收益 | `node account-profit.js [account] [--json]` | 获取各账户总资产、持有盈亏、当日盈亏 |
+| 未匹配查询 | `node unmatched.js [options]` | 查询未匹配交易记录，支持 --code / --name / --op 过滤 |
 
 ## 触发词与动作映射
 
@@ -32,6 +34,7 @@ category: finance
 | 匹配记录 | 匹配、配对、买卖匹配 | `node match.js [起止日期]` |
 | 查看收益 | 收益、赚了多少、profit、网格收益 | `node profit.js [月份]` |
 | 实时行情 | 行情、实时行情、持仓行情、股票行情、最新价 | `node quotes.js [账户]` |
+| 账户收益 | 账户收益、总资产、持有盈亏、当日盈亏、当日收益率、账户盈亏 | `node account-profit.js [账户]` |
 | 持仓查询 | 持仓、现在持有、手里有什么股票 | `node quotes.js` |
 
 ## 标准工作流
@@ -43,7 +46,7 @@ category: finance
 # 执行前询问："首次使用需要初始化，确认继续？"
 
 # 1. 检查 opencli stock 插件是否存在，不存在则自动复制
-ls ~/.opencli/plugins/stock/init.js || cp -r ~/Workspace/personal/stock-skill/resources/stock ~/.opencli/plugins/stock
+ls ~/.opencli/plugins/stock/init.js || cp -r ~/.agents/skills/stock-skill/resources/stock ~/.opencli/plugins/stock
 
 # 2. 获取 Cookie
 opencli stock init
@@ -52,13 +55,13 @@ opencli stock init
 # 执行前询问："Cookie 已获取，确认初始化数据库？"
 
 # 3. 初始化数据库
-cd ~/Workspace/personal/stock-skill/scripts && node init-db.js
+cd ~/.agents/skills/stock-skill/scripts && node init-db.js
 ```
 
 ### 场景：查看收益（最常用）
 
 ```bash
-cd ~/Workspace/personal/stock-skill/scripts
+cd ~/.agents/skills/stock-skill/scripts
 
 # 步骤1：同步最新数据（用户说"同步"或"最新"时执行）
 node sync.js
@@ -83,7 +86,7 @@ node profit.js [YYYY-MM] [YYYY-MM]
 ### 场景：查看某只股票收益
 
 ```bash
-cd ~/Workspace/personal/stock-skill/scripts
+cd ~/.agents/skills/stock-skill/scripts
 node profit.js 2026-04
 ```
 
@@ -103,7 +106,7 @@ node profit.js 2026-04
 ### 场景：查看持仓实时行情
 
 ```bash
-cd ~/Workspace/personal/stock-skill/scripts
+cd ~/.agents/skills/stock-skill/scripts
 
 # 获取所有账户持仓行情
 node quotes.js
@@ -114,10 +117,36 @@ node quotes.js 冯
 
 **注意：** 此命令会实时调用 API 获取最新行情数据，无需提前同步。
 
+### 场景：查看账户收益
+
+```bash
+cd ~/.agents/skills/stock-skill/scripts
+
+# 查看所有账户收益
+node account-profit.js
+
+# 查看指定账户收益
+node account-profit.js 冯
+
+# JSON 格式输出（便于程序消费）
+node account-profit.js --json
+```
+
+**输出示例：**
+```
+账户名称        总资产           持有盈亏          当日盈亏          当日收益率
+──────────────────────────────────────────────────────────────────────────
+国泰-冯**      929534.57     77195.27      6089.42       0.66%
+国泰-陈**      115996.12     -24985.46     -1835.80      -1.56%
+汇总          1045530.69    52209.81      4253.62       0.41%
+```
+
+**注意：** 此命令实时调用 `stock_card` 接口，无需提前同步；末尾「汇总」行的当日收益率按 当日盈亏/(总资产-当日盈亏) 加权计算。
+
 ### 场景：同步历史数据
 
 ```bash
-cd ~/Workspace/personal/stock-skill/scripts
+cd ~/.agents/skills/stock-skill/scripts
 
 # 🔴 STOP · 检查点：同步前必须确认时间范围
 # 执行前询问："确认同步 XXXX-XX-XX 至 XXXX-XX-XX 的数据？"
@@ -151,8 +180,8 @@ SELECT account_name, name, code, op, entry_price, entry_count, entry_money, entr
 FROM t_trade_record WHERE name LIKE '%股票名%' ORDER BY entry_date DESC, entry_time DESC LIMIT 20
 
 -- 查询匹配记录
-SELECT account_name, name, code, buy_price, buy_count, sell_price, sell_count, profit, buy_date, sell_date
-FROM t_trade_matched_record WHERE name LIKE '%股票名%' ORDER BY sell_date DESC LIMIT 20
+SELECT account_name, name, code, sell_entry_price, buy_entry_count, sell_entry_money, buy_entry_money, profit, sell_time, buy_time
+FROM t_trade_matched_record WHERE name LIKE '%股票名%' ORDER BY sell_time DESC LIMIT 20
 
 -- 查询今日交易
 SELECT entry_date, entry_time, code, name, op, entry_price, entry_count, entry_money
@@ -171,11 +200,17 @@ FROM t_trade_record WHERE entry_date = current_date ORDER BY entry_time
 | `node match.js` | `[startDate] [endDate]` | 匹配买卖记录 |
 | `node profit.js` | `[startMonth] [endMonth]` | 查询收益，月份格式 YYYY-MM |
 | `node quotes.js` | `[account]` | 查询实时行情，account 可选 |
+| `node account-profit.js` | `[account] [--json]` | 查询账户收益，account 可选，--json 输出 JSON |
+| `node unmatched.js` | `[--code] [--name] [--op] [--start] [--end] [--account]` | 查询未匹配交易记录 |
 
 **关键特性**：
+- sync：两阶段策略（并行 API → 顺序 DB 写入），避免 DuckDB 单写者锁冲突
 - sync：自动分页（max_page）、错误重试（3次）、幂等（INSERT OR REPLACE）
+- sync：批量写入（500 行一批），取代逐行 INSERT
 - profit：年收益 = 年初到查询截止月累计
 - quotes：实时 API，无需提前同步
+- match：`LEFT JOIN` 替代 `NOT IN` 查询未匹配记录，避免 NULL 值陷阱
+- 数据库表已添加索引（`op + entry_date`、`sell_history_id`、`sell_time` 等）
 
 ## 输出格式
 
@@ -183,6 +218,7 @@ FROM t_trade_record WHERE entry_date = current_date ORDER BY entry_time
 |------|----------|
 | profit | 表格：账户/时间/代码/名称/交易次数/总收益，末尾附月/年收益汇总 |
 | quotes | 按账户分组，每组末尾附汇总行，按当日盈亏率降序 |
+| account-profit | 表格：账户名称/总资产/持有盈亏/当日盈亏/当日收益率，末尾附汇总行 |
 | sync | 成功：记录数+时间范围；失败：提示更新 Cookie |
 | match | 成功：匹配数量；部分未匹配：提示原因 |
 
@@ -192,9 +228,10 @@ FROM t_trade_record WHERE entry_date = current_date ORDER BY entry_time
 |------|---|
 | 数据库 | `~/.duckdb/stock/stock.db` |
 | 配置文件 | `~/.duckdb/stock/config`（存放 Cookie） |
-| 脚本目录 | `~/Workspace/personal/stock-skill/scripts/` |
+| 脚本目录 | `~/.agents/skills/stock-skill/scripts/` |
 | 交易记录表 | `t_trade_record` |
 | 匹配记录表 | `t_trade_matched_record` |
+| 数据库索引 | `idx_trade_op_date`(op,entry_date), `idx_trade_code`, `idx_matched_sell_history`, `idx_matched_sell_time` 等 |
 | op='1' | 买入 |
 | op='2' | 卖出 |
 
@@ -210,9 +247,9 @@ FROM t_trade_record WHERE entry_date = current_date ORDER BY entry_time
 1. **Cookie 是否过期？** → 检查 `~/.duckdb/stock/config` 文件修改时间，超过 24 小时执行 `opencli stock init`
 2. **网络是否正常？** → 执行 `curl -s https://tzzb.10jqka.com.cn` 测试连通性
 3. **日期格式是否正确？** → 必须是 `YYYYMMDD`，如 `20260627`
-4. **脚本目录是否正确？** → 必须在 `~/Workspace/personal/stock-skill/scripts/` 下执行
+4. **脚本目录是否正确？** → 必须在 `~/.agents/skills/stock-skill/scripts/` 下执行
 5. **是否 API 限流？** → 等待 30 秒后重试，脚本内置 3 次重试
-6. **是否并发冲突？** → 检查是否有其他 sync 进程运行：`ps aux | grep sync.js`
+6. **是否并发冲突？** → 检查是否有其他 sync 进程运行：`ps aux | grep sync.js`。两阶段同步（并行 API → 顺序 DB 写入）已避免单进程内的锁冲突，但仍不能同时运行两个 sync 进程
 
 **回退方案**：如果同步失败，数据不会丢失，可重新执行。
 
@@ -273,39 +310,29 @@ FROM t_trade_record WHERE entry_date = current_date ORDER BY entry_time
 | 手动修改 history_id | 让脚本自动生成 | 破坏幂等性，导致重复数据 |
 | 跳过 match 直接查收益 | 先 match 再 profit | 未匹配的记录不会计入收益 |
 | 同步时不指定日期范围 | 指定具体日期范围 | 默认只同步当月，可能遗漏数据 |
-| 删除 stock.db 重新 init | 先备份再操作 | 会丢失历史数据 |
-| 使用 node v24 运行脚本 | 使用 node v20 或以下 | DuckDB 原生模块兼容性问题 |
-| 在 scripts 目录外执行脚本 | 必须在 scripts 目录下执行 | 相对路径会找不到模块 |
-| 直接修改 sql-sync.js 的 SQL | 使用 Node.js fetch 替代 | 已移除 http_request 扩展依赖 |
 | 同步时使用未来日期 | 使用当前或历史日期 | API 会返回空数据 |
 | 匹配时使用比同步更大的范围 | 匹配范围应 ≤ 同步范围 | 会匹配到不存在的数据 |
-| 重复运行 init-db.js | 只在首次或损坏时运行 | 会清空已有数据 |
+| 在 scripts 目录外执行脚本 | 必须在 scripts 目录下执行 | 相对路径会找不到模块 |
+| 直接修改 SQL 文件而不改 business.js | 同步修改对应逻辑 | 表结构变更需同步更新业务逻辑 |
+| 使用 node v24 运行 | 使用 node v20 或以下 | DuckDB 原生模块兼容性问题 |
+| 删除 stock.db 重新 init | 先备份再操作 | 会丢失历史数据 |
+| 重复运行 init-db.js | 正常使用 | 幂等操作，不会清空数据，但会重新同步账户信息 |
 | 网络超时时立即重试 | 等待 30 秒后重试 | 避免触发 API 限流 |
-| 同步时使用通配符日期 | 使用具体日期范围 | 避免同步过多数据 |
-| 在匹配完成前查询收益 | 先完成匹配再查询 | 未匹配数据不计入收益 |
-| 忽略错误重试次数 | 检查重试日志 | 可能是持久性错误 |
-| 同时运行多个 sync 进程 | 单线程执行 | 避免数据库并发冲突 |
-| 网络超时时立即重试 | 等待 30 秒后重试 | 避免触发 API 限流 |
-| 同步时使用通配符日期 | 使用具体日期范围 | 避免同步过多数据 |
-| 在匹配完成前查询收益 | 先完成匹配再查询 | 未匹配数据不计入收益 |
-| 忽略错误重试次数 | 检查重试日志 | 可能是持久性错误 |
-| 同时运行多个 sync 进程 | 单线程执行 | 避免数据库并发冲突 |
+| 大范围同步不确认 | 先确认用户意图再执行 | 耗时较长，可能超时 |
+| 同时运行多个 sync 进程 | 单线程执行 | 两阶段同步已避免单进程内锁冲突，但多进程仍会冲突 |
 
 ### ⚠️ 危险动作
 
 | 动作 | 风险 | 防护 |
 |------|------|------|
 | 大范围同步（>3个月） | 耗时长、可能超时 | 先确认用户意图，分批执行 |
-| 并发修改数据库 | 数据损坏 | 使用单例连接，避免并发写入 |
+| 并发修改数据库 | 数据损坏 | 两阶段同步（并行 API + 顺序 DB 写入）已避免单进程内锁冲突，但禁止同时运行多个 sync 进程 |
 | Cookie 明文存储 | 安全风险 | 仅本地使用，不上传 |
 
 ### 🔴 红灯行为（STOP）
 
 **以下操作严格禁止，违反可能导致数据损坏：**
 
-- **不要**在未同步的情况下查询收益 → 先执行 `node sync.js`
-- **不要**在未匹配的情况下统计收益 → 先执行 `node match.js`
-- **不要**手动 INSERT 数据库 → 必须使用脚本
+- **不要**手动 INSERT 或修改数据库 → 必须使用脚本
 - **不要**修改 SQL 表结构 → 除非明确需要且已备份
-- **不要**在生产环境测试新功能 → 先在测试环境验证
-- **不要**并发修改数据库 → 使用单例连接
+- **不要**并发修改数据库 → 两阶段同步已避免单进程内锁冲突，仍禁止同时运行多个 sync 进程

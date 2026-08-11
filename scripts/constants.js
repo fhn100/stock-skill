@@ -24,6 +24,7 @@ export const API_PATH = {
   PASS_QUOTES: "/caishen_fund/invest/v1/pass_quotes",
   STOCK_POSITION: "/caishen_fund/pc/asset/v1/stock_position",
   SYNC_TRADE: "/caishen_fund/pc/account/v2/get_money_history",
+  STOCK_CARD: "/caishen_fund/pc/account/v1/stock_card",
 };
 
 // ============================ HTTP Headers ============================

@@ -1,95 +1,13 @@
-import {
-  getCookie,
-  getUserId,
-  getTodayDate,
-  retry,
-  AppError,
-  maskAccountName,
-  checkCookieValid,
-} from "./utils.js";
-import { API_BASE, API_PATH, HTTP_HEADERS, API_DEFAULTS, FETCH_TIMEOUT_MS } from "./constants.js";
-
-// ============================ API 调用 ============================
-
 /**
- * API 请求封装（带重试、超时和错误处理）
- * @param {string} path - API 路径
- * @param {object} params - 请求参数
- * @param {number} [maxRetries=2] - 最大重试次数
- * @returns {Promise<object>} API 响应数据
- * @throws {AppError} API 请求失败时抛出
+ * 行情查询 API 模块
+ * 依赖 api-client.js 共享的 HTTP 客户端
  */
-async function apiPost(path, params, maxRetries = 2) {
-  return retry(
-    async () => {
-      checkCookieValid();
-      const cookie = getCookie();
-      const userId = getUserId();
-      const body = new URLSearchParams({
-        userid: userId,
-        ...API_DEFAULTS,
-        ...params,
-      });
 
-      let res;
-      try {
-        res = await fetch(`${API_BASE}${path}`, {
-          method: "POST",
-          headers: {
-            "User-Agent": HTTP_HEADERS.USER_AGENT,
-            "Content-Type": HTTP_HEADERS.CONTENT_TYPE,
-            "Origin": HTTP_HEADERS.ORIGIN,
-            "Referer": HTTP_HEADERS.REFERER,
-            cookie,
-          },
-          body: body.toString(),
-          signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-        });
-      } catch (error) {
-        throw new AppError(`网络请求失败: ${error.message}`, "NETWORK_ERROR");
-      }
-
-      if (!res.ok) {
-        throw new AppError(
-          `HTTP ${res.status}: ${res.statusText}`,
-          "HTTP_ERROR",
-          res.status,
-        );
-      }
-
-      let json;
-      try {
-        json = await res.json();
-      } catch (error) {
-        throw new AppError(`JSON 解析失败: ${error.message}`, "PARSE_ERROR");
-      }
-
-      if (json.error_code !== "0") {
-        throw new AppError(json.error_msg || "请求失败", "API_ERROR");
-      }
-
-      return json.ex_data;
-    },
-    maxRetries,
-    1000,
-  );
-}
+import { apiPost, getAccounts, filterAccounts } from "./api-client.js";
+import { getUserId, getTodayDate, maskAccountName } from "./utils.js";
+import { API_PATH } from "./constants.js";
 
 // ============================ 账户与行情 ============================
-
-/**
- * 获取账户列表
- * @returns {Promise<Array<{fund_key: string, manualname: string}>>} 账户列表
- */
-async function getAccounts() {
-  const data = await apiPost(API_PATH.ACCOUNT_LIST, {
-    user_id: getUserId(),
-  });
-  return (data.common || []).map((item) => ({
-    fund_key: item.fund_key,
-    manualname: item.manualname,
-  }));
-}
 
 /**
  * 获取股票行情
@@ -119,17 +37,6 @@ async function passQuotes(code) {
 }
 
 // ============================ 持仓行情 ============================
-
-/**
- * 按名称过滤账户列表
- * @param {Array} accounts - 账户列表
- * @param {string} filterStr - 过滤关键词
- * @returns {Array} 过滤后的账户列表
- */
-function filterAccounts(accounts, filterStr) {
-  const lower = filterStr.toLowerCase();
-  return accounts.filter((a) => a.manualname?.toLowerCase().includes(lower));
-}
 
 /**
  * 获取单个账户的持仓数据

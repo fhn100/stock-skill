@@ -4,45 +4,17 @@
  */
 
 import { withDb } from "./db.js";
-import { TABLE, OP, PAGE_SIZE, API_BASE, API_PATH, HTTP_HEADERS, API_DEFAULTS, DICT_TYPE, SYNC_CONCURRENCY } from "./constants.js";
-import { getCookie, getUserId, checkCookieValid } from "./utils.js";
+import { apiPost } from "./api-client.js";
+import { TABLE, OP, PAGE_SIZE, API_PATH, DICT_TYPE, SYNC_CONCURRENCY } from "./constants.js";
+import { getUserId } from "./utils.js";
 import {
   GRID_PROFIT
 } from "./sql-profit.js";
 import {
   CREATE_DICT, CREATE_TRADE_RECORD, CREATE_TRADE_MATCHED
 } from "./sql-schema.js";
-import { INSERT_ACCOUNT, INSERT_TRADE } from "./sql-sync.js";
+import { INSERT_ACCOUNT } from "./sql-sync.js";
 import { LOAD_UNMATCHED_TRADES, INSERT_MATCHED } from "./sql-match.js";
-
-// ============================ HTTP 请求工具 ============================
-
-/**
- * 发起 POST 请求（同花顺财神平台 API）
- * @param {string} url - 请求 URL
- * @param {Object} params - 表单参数
- * @param {string} cookie - Cookie
- * @returns {Promise<Object>} JSON 响应
- */
-async function postForm(url, params, cookie) {
-  const formData = new URLSearchParams(params);
-  const headers = {
-    ...HTTP_HEADERS,
-    cookie,
-  };
-
-  const response = await fetch(url, {
-    method: 'POST',
-    headers,
-    body: formData,
-  });
-
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-  }
-
-  return await response.json();
-}
 
 // ============================ 数据库初始化 ============================
 
@@ -64,23 +36,13 @@ export async function initDb() {
 
 /** 同步账户信息到字典表 */
 export async function initAccount() {
-  checkCookieValid();
-  const cookie = getCookie();
   const userId = getUserId();
 
-  // 调用 API 获取账户列表
-  const url = `${API_BASE}${API_PATH.ACCOUNT_LIST}`;
-  const params = {
-    userid: userId,
+  const data = await apiPost(API_PATH.ACCOUNT_LIST, {
     user_id: userId,
-    terminal: API_DEFAULTS.TERMINAL,
-    version: API_DEFAULTS.VERSION,
-  };
+  });
 
-  const data = await postForm(url, params, cookie);
-
-  // 解析响应并插入数据库
-  const common = data?.ex_data?.common || [];
+  const common = data?.common || [];
   await withDb(async (conn) => {
     for (const item of common) {
       const fundKey = item.fund_key;
@@ -97,56 +59,72 @@ export async function initAccount() {
 // ============================ 交易记录同步 ============================
 
 /**
- * 按基金KEY同步交易记录（自动分页，带重试）
+ * 所有交易记录插入列（与动态构建的 INSERT OR REPLACE VALUES 顺序一致）
+ */
+const TRADE_COLUMNS = [
+  "account_id", "account_name", "account_type", "code", "commission",
+  "entry_cost", "entry_count", "entry_date", "entry_money", "entry_price",
+  "entry_time", "entry_date_time", "fee_total", "history_id", "manual_id",
+  "market_code", "name", "oid", "op", "op_name", "transfer_fee",
+];
+
+/**
+ * 批量插入交易记录
+ * @param {object} conn - 数据库连接
+ * @param {Array<Array>} rows - 行数据数组
+ */
+async function batchInsertTrades(conn, rows) {
+  if (rows.length === 0) return;
+  const BATCH_SIZE = 500;
+  for (let i = 0; i < rows.length; i += BATCH_SIZE) {
+    const batch = rows.slice(i, i + BATCH_SIZE);
+    const placeholders = batch.map(() =>
+      `(${TRADE_COLUMNS.map(() => "?").join(",")})`
+    ).join(",");
+    const sql = `INSERT OR REPLACE INTO ${TABLE.TRADE_RECORD} (${TRADE_COLUMNS.join(",")}) VALUES ${placeholders}`;
+    await conn.run(sql, batch.flat());
+  }
+}
+
+/**
+ * 获取单个账户的所有交易记录页（纯 API 调用，不涉及 DB）
  * @param {string} fundKey - 基金KEY
  * @param {string} startDate - 开始日期 YYYYMMDD
  * @param {string} endDate - 结束日期 YYYYMMDD
- * @param {number} [page=1] - 页码
- * @param {number} [retryCount=3] - 剩余重试次数
- * @returns {Promise<number>} 同步的记录数
+ * @param {string} accountName - 账户名称（预先从 DB 读取）
+ * @returns {Promise<Array<Array>>} 解析后的行数据数组
  */
-async function syncTradeByFundKey(fundKey, startDate, endDate, page = 1, retryCount = 3) {
-  try {
-    checkCookieValid();
-    const cookie = getCookie();
-    const userId = getUserId();
+async function fetchTradePages(fundKey, startDate, endDate, accountName) {
+  const userId = getUserId();
+  let allRows = [];
+  let page = 1;
+  let maxPage = 1;
 
-    // 调用 API 获取交易记录
-    const url = `${API_BASE}${API_PATH.SYNC_TRADE}`;
-    const params = {
+  while (page <= maxPage) {
+    const data = await apiPost(API_PATH.SYNC_TRADE, {
       userid: userId,
       user_id: userId,
       fund_key: fundKey,
-      stock_code: '',
-      stock_account: '',
+      stock_code: "",
+      stock_account: "",
       start_date: startDate,
       end_date: endDate,
       page: page.toString(),
       count: PAGE_SIZE.toString(),
-      sort_type: '',
-      sort_order: '1',
-    };
-
-    const data = await postForm(url, params, cookie);
-    const exData = data?.ex_data || {};
-    const maxPage = exData.max_page || 1;
-    const list = exData.list || [];
-
-    // 获取账户名称
-    let accountName = '';
-    await withDb(async (conn) => {
-      const rows = await conn.all(
-        `SELECT value FROM ${TABLE.DICT} WHERE key = ? AND type = '${DICT_TYPE.FUND_KEY}'`,
-        [fundKey]
-      );
-      accountName = rows[0]?.value || '';
+      sort_type: "",
+      sort_order: "1",
     });
 
-    // 解析响应并批量插入数据库
+    const exData = data || {};
+    maxPage = exData.max_page || 1;
+    const list = exData.list || [];
+
+    // 解析响应（纯数据转换，无 DB 操作）
     const rows = list.map(item => {
       const entryDateTime = `${item.entry_date} ${item.entry_time}`;
       const entryEpoch = Math.floor(new Date(entryDateTime).getTime() / 1000);
-      const historyId = `${item.account_id}${entryEpoch}${item.code}${item.op}${item.entry_count}`;
+      const entryCount = parseInt(item.entry_count) || 0;
+      const historyId = `${item.account_id}${entryEpoch}${item.code}${item.op}${entryCount}`;
 
       return [
         item.account_id,
@@ -155,7 +133,7 @@ async function syncTradeByFundKey(fundKey, startDate, endDate, page = 1, retryCo
         item.code,
         parseFloat(item.commission) || 0,
         parseFloat(item.entry_cost) || 0,
-        item.entry_count,
+        entryCount,
         item.entry_date,
         parseFloat(item.entry_money) || 0,
         parseFloat(item.entry_price) || 0,
@@ -173,53 +151,53 @@ async function syncTradeByFundKey(fundKey, startDate, endDate, page = 1, retryCo
       ];
     });
 
-    await withDb(async (conn) => {
-      for (const row of rows) {
-        await conn.run(INSERT_TRADE, row);
+    allRows.push(...rows);
+    console.log(`获取交易记录成功, 账户: ${fundKey}, 页: ${page}/${maxPage}, 记录数: ${rows.length}`);
+    page++;
+  }
+
+  return allRows;
+}
+
+/**
+ * 同步一批账户的数据
+ *
+ * 两阶段策略避免 DuckDB 单写者锁冲突：
+ *   阶段 1 — 并行 API 调用（无 DB 操作）
+ *   阶段 2 — 顺序 DB 写入
+ *
+ * @param {Array<string>} fundKeys - 基金KEY 列表
+ * @param {string} startDate - 开始日期 YYYYMMDD
+ * @param {string} endDate - 结束日期 YYYYMMDD
+ * @param {Map<string, string>} accountNames - fundKey → accountName 映射
+ */
+async function syncBatch(fundKeys, startDate, endDate, accountNames) {
+  // 阶段 1: 并行发起所有 API 请求，不涉及 DB
+  const fetchResults = await Promise.all(
+    fundKeys.map(async (fk) => {
+      try {
+        const accountName = accountNames.get(fk) || "";
+        const rows = await fetchTradePages(fk, startDate, endDate, accountName);
+        return { fundKey: fk, success: true, rows };
+      } catch (error) {
+        console.error(`账户 ${fk} 获取数据失败:`, error.message);
+        return { fundKey: fk, success: false, error: error.message, rows: [] };
       }
-    });
-
-    const n = list.length;
-    console.log(`同步交易记录成功, 账户: ${fundKey}, 页: ${page}/${maxPage}, 记录数: ${n}`);
-
-    if (page < maxPage) {
-      await syncTradeByFundKey(fundKey, startDate, endDate, page + 1, retryCount);
-    }
-
-    return n;
-  } catch (error) {
-    if (retryCount > 1) {
-      console.warn(`同步交易记录失败, 账户: ${fundKey}, 页: ${page}, 重试中... (${retryCount - 1}/${3})`);
-      await new Promise(r => setTimeout(r, 1000));
-      return await syncTradeByFundKey(fundKey, startDate, endDate, page, retryCount - 1);
-    }
-    throw error;
-  }
-}
-
-/**
- * 同步单个账户（带错误捕获）
- */
-async function syncSingleAccount(fundKey, startDate, endDate) {
-  try {
-    await syncTradeByFundKey(fundKey, startDate, endDate);
-    return { fundKey, success: true };
-  } catch (error) {
-    console.error(`账户 ${fundKey} 同步失败:`, error.message);
-    return { fundKey, success: false, error: error.message };
-  }
-}
-
-/**
- * 同步一批账户（并行处理）
- */
-async function syncBatch(fundKeys, startDate, endDate) {
-  const results = await Promise.all(
-    fundKeys.map((fk) => syncSingleAccount(fk, startDate, endDate))
+    })
   );
 
-  const successCount = results.filter((r) => r.success).length;
-  const failCount = results.filter((r) => !r.success).length;
+  // 阶段 2: 顺序写入数据库，避免并发写锁
+  for (const result of fetchResults) {
+    if (result.success && result.rows.length > 0) {
+      await withDb(async (conn) => {
+        await batchInsertTrades(conn, result.rows);
+      });
+      console.log(`写入交易记录成功, 账户: ${result.fundKey}, 记录数: ${result.rows.length}`);
+    }
+  }
+
+  const successCount = fetchResults.filter((r) => r.success).length;
+  const failCount = fetchResults.filter((r) => !r.success).length;
 
   if (failCount > 0) {
     console.warn(`本批次 ${fundKeys.length} 个账户: ${successCount} 成功, ${failCount} 失败`);
@@ -229,11 +207,14 @@ async function syncBatch(fundKeys, startDate, endDate) {
 }
 
 /**
- * 同步所有账户的交易记录（并行分批处理）
- * 账户从 t_dict 表读取（type=fund_key），不再依赖 gtja-api.js / t_dict_account
+ * 同步所有账户的交易记录
+ *
+ * 先读取所有账户名称（顺序 DB 读，很快），
+ * 然后分批并行 API 请求 + 顺序 DB 写入（避免 DuckDB 单写者锁冲突）。
+ *
  * @param {string} startDate - 开始日期 YYYYMMDD
  * @param {string} endDate - 结束日期 YYYYMMDD
- * @param {number} [concurrency=3] - 并发数
+ * @param {number} [concurrency=3] - 每批并发数
  */
 export async function syncTrade(startDate, endDate, concurrency = SYNC_CONCURRENCY) {
   await withDb(async (conn) => {
@@ -242,15 +223,21 @@ export async function syncTrade(startDate, endDate, concurrency = SYNC_CONCURREN
     await conn.run(CREATE_TRADE_MATCHED);
   });
 
-  const fundKeys = await withDb(async (conn) => {
-    const rows = await conn.all(`SELECT key FROM ${TABLE.DICT} WHERE type = '${DICT_TYPE.FUND_KEY}'`);
-    return rows.map((row) => row.key);
+  // 预先读取所有账户的 fundKey 和 accountName（顺序 DB 读，一次完成）
+  const { fundKeys, accountNames } = await withDb(async (conn) => {
+    const rows = await conn.all(
+      `SELECT key, value FROM ${TABLE.DICT} WHERE type = '${DICT_TYPE.FUND_KEY}'`
+    );
+    return {
+      fundKeys: rows.map((r) => r.key),
+      accountNames: new Map(rows.map((r) => [r.key, r.value])),
+    };
   });
 
   console.log(`开始同步 ${fundKeys.length} 个账户，并发数: ${concurrency}`);
 
   for (let i = 0; i < fundKeys.length; i += concurrency) {
-    await syncBatch(fundKeys.slice(i, i + concurrency), startDate, endDate);
+    await syncBatch(fundKeys.slice(i, i + concurrency), startDate, endDate, accountNames);
   }
 
   console.log("所有账户交易记录同步完成");
@@ -341,7 +328,7 @@ export async function tradeMatch({ netFilter = true } = {}) {
 
     // 净额：买入成本含费，卖出所得扣费（profit 恒用净额）
     // 港股（market_code=15）API 的 transfer_fee 字段等于成交额，非真实费用，跳过
-    const fee = (t) => (t.entry_money === t.transfer_fee ? 0 : t.transfer_fee);
+    const fee = (t) => (Number(t.entry_money) === Number(t.transfer_fee) ? 0 : Number(t.transfer_fee));
     for (const b of buys) {
       b.netMoney = b.entry_money + fee(b) + b.commission;
       b.matchMoney = netFilter ? b.netMoney : b.entry_money;

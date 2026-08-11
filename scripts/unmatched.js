@@ -11,12 +11,6 @@
  *   --account <账户名>   按账户名称过滤
  */
 
-import { fileURLToPath } from "url";
-import { dirname } from "path";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
 import { withDb } from "./db.js";
 import { TABLE, OP } from "./constants.js";
 import { maskAccountName } from "./utils.js";

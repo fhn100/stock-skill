@@ -1,6 +1,6 @@
 /**
  * SQL 表结构定义
- * 包含所有数据库表的 CREATE 语句
+ * 包含所有数据库表的 CREATE 语句和索引
  */
 
 import { TABLE } from "./constants.js";
@@ -14,7 +14,9 @@ export const CREATE_DICT = `
     key VARCHAR DEFAULT '' PRIMARY KEY,
     type VARCHAR DEFAULT '',
     value VARCHAR DEFAULT ''
-  );`;
+  );
+  CREATE INDEX IF NOT EXISTS idx_dict_type ON ${TABLE.DICT}(type);
+`;
 
 /**
  * 交易记录表创建语句
@@ -43,7 +45,11 @@ export const CREATE_TRADE_RECORD = `
     op VARCHAR,
     op_name VARCHAR,
     transfer_fee DECIMAL(10,4)
-  );`;
+  );
+  CREATE INDEX IF NOT EXISTS idx_trade_op_date ON ${TABLE.TRADE_RECORD}(op, entry_date);
+  CREATE INDEX IF NOT EXISTS idx_trade_code ON ${TABLE.TRADE_RECORD}(code);
+  CREATE INDEX IF NOT EXISTS idx_trade_date_time ON ${TABLE.TRADE_RECORD}(entry_date_time);
+`;
 
 /**
  * 交易匹配表创建语句
@@ -71,4 +77,9 @@ export const CREATE_TRADE_MATCHED = `
     sell_history_id VARCHAR,
     buy_history_id VARCHAR,
     PRIMARY KEY(sell_history_id, buy_history_id)
-  );`;
+  );
+  CREATE INDEX IF NOT EXISTS idx_matched_sell_history ON ${TABLE.TRADE_MATCHED}(sell_history_id);
+  CREATE INDEX IF NOT EXISTS idx_matched_buy_history ON ${TABLE.TRADE_MATCHED}(buy_history_id);
+  CREATE INDEX IF NOT EXISTS idx_matched_sell_time ON ${TABLE.TRADE_MATCHED}(sell_time);
+  CREATE INDEX IF NOT EXISTS idx_matched_code ON ${TABLE.TRADE_MATCHED}(code);
+`;

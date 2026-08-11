@@ -51,10 +51,10 @@ bun install -g @jackwener/opencli
 
 ```bash
 # 克隆仓库
-git clone https://github.com/fhn100/stock-skill.git ~/Workspace/personal/stock-skill
+git clone https://github.com/fhn100/stock-skill.git ~/.agents/skills/stock-skill
 
 # 复制插件到 opencli 插件目录
-cp -r ~/Workspace/personal/stock-skill/resources/stock ~/.opencli/plugins/stock
+cp -r ~/.agents/skills/stock-skill/resources/stock ~/.opencli/plugins/stock
 
 # 安装插件依赖
 cd ~/.opencli/plugins/stock && npm install
@@ -63,7 +63,7 @@ cd ~/.opencli/plugins/stock && npm install
 ### 安装脚本依赖
 
 ```bash
-cd ~/Workspace/personal/stock-skill/scripts && npm install
+cd ~/.agents/skills/stock-skill/scripts && npm install
 ```
 
 ## 快速开始
@@ -75,7 +75,7 @@ cd ~/Workspace/personal/stock-skill/scripts && npm install
 opencli stock init
 
 # 2. 初始化数据库
-cd ~/Workspace/personal/stock-skill/scripts && node init-db.js
+cd ~/.agents/skills/stock-skill/scripts && node init-db.js
 
 # 3. 同步交易记录
 node sync.js 20250101 20260627
@@ -90,7 +90,7 @@ node profit.js
 ### 日常使用
 
 ```bash
-cd ~/Workspace/personal/stock-skill/scripts
+cd ~/.agents/skills/stock-skill/scripts
 
 # 同步当月数据
 node sync.js
@@ -115,6 +115,8 @@ node quotes.js
 | `node match.js` | `[startDate] [endDate]` | 匹配买卖记录 |
 | `node profit.js` | `[startMonth] [endMonth]` | 查询收益，月份格式 YYYY-MM |
 | `node quotes.js` | `[account]` | 查询实时行情，account 可选 |
+| `node account-profit.js` | `[account] [--json]` | 查询账户收益卡片，--json 输出 JSON |
+| `node unmatched.js` | `[--code] [--name] [--op] [--start] [--end] [--account]` | 查询未匹配交易记录 |
 
 ## 数据存储
 
@@ -122,7 +124,7 @@ node quotes.js
 |------|------|
 | 数据库 | `~/.duckdb/stock/stock.db` |
 | 配置文件 | `~/.duckdb/stock/config` |
-| 脚本目录 | `~/Workspace/personal/stock-skill/scripts/` |
+| 脚本目录 | `~/.agents/skills/stock-skill/scripts/` |
 
 ## 数据库表结构
 
@@ -175,7 +177,7 @@ opencli stock init
 cp ~/.duckdb/stock/stock.db ~/.duckdb/stock/stock.db.bak
 
 # 重新初始化
-cd ~/Workspace/personal/stock-skill/scripts && node init-db.js
+cd ~/.agents/skills/stock-skill/scripts && node init-db.js
 
 # 重新同步
 node sync.js 20250101 $(date +%Y%m%d)
@@ -208,32 +210,35 @@ node match.js 20250101 $(date +%Y%m%d)
 stock-skill/
 ├── SKILL.md           # 技能定义
 ├── README.md          # 本文档
+├── test-prompts.json  # 测试用例
 ├── resources/
 │   └── stock/         # opencli 插件
 │       ├── init.js    # Cookie 获取脚本
 │       └── package.json
-├── scripts/           # 核心脚本
-│   ├── business.js    # 业务逻辑
-│   ├── db.js          # 数据库连接
-│   ├── utils.js       # 工具函数
-│   ├── constants.js   # 常量定义
-│   ├── sql-sync.js    # 同步 SQL
-│   ├── sql-schema.js  # 表结构 SQL
-│   ├── sql-match.js   # 匹配 SQL
-│   ├── sql-profit.js  # 收益 SQL
-│   ├── quotes-api.js  # 行情 API
-│   ├── init-db.js     # 数据库初始化
-│   ├── sync.js        # 交易同步
-│   ├── match.js       # 交易匹配
-│   ├── profit.js      # 收益查询
-│   └── quotes.js      # 行情查询
-└── test-prompts.json  # 测试用例
+└── scripts/           # 核心脚本
+    ├── api-client.js  # 共享 HTTP 客户端
+    ├── business.js    # 业务逻辑（同步/匹配/收益）
+    ├── db.js          # 数据库连接
+    ├── utils.js       # 工具函数
+    ├── constants.js   # 常量定义
+    ├── sql-sync.js    # 同步 SQL
+    ├── sql-schema.js  # 表结构 + 索引
+    ├── sql-match.js   # 匹配 SQL
+    ├── sql-profit.js  # 收益 SQL
+    ├── quotes-api.js  # 行情 API
+    ├── init-db.js     # 数据库初始化
+    ├── sync.js        # 交易同步入口
+    ├── match.js       # 交易匹配入口
+    ├── profit.js      # 收益查询入口
+    ├── quotes.js      # 行情查询入口
+    ├── account-profit.js  # 账户收益入口
+    ├── unmatched.js   # 未匹配记录查询
 ```
 
 ### 运行测试
 
 ```bash
-cd ~/Workspace/personal/stock-skill/scripts
+cd ~/.agents/skills/stock-skill/scripts
 
 # 测试同步
 node sync.js 20260601 20260630
