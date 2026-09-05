@@ -8,6 +8,8 @@
 
 import { syncTrade, tradeMatch, gridProfit } from "./business.js";
 import { getCurrentMonth, getDefaultDateRange } from "./utils.js";
+import { withDb } from "./db.js";
+import { TABLE } from "./constants.js";
 
 // 解析命令行参数
 const args = process.argv.slice(2);
@@ -18,6 +20,31 @@ try {
   // 同步当月交易记录
   const { startDate, endDate } = getDefaultDateRange();
   console.log(`同步范围：${startDate} ~ ${endDate}`);
+
+  // 清理脏数据：删除同步窗口内过户费为 0 的记录（接口费用数据有误的历史快照），
+  // 随后 syncTrade 会立即重拉补回；范围限定当月，避免丢失历史记录
+  const ym = `${startDate.substring(0, 4)}-${startDate.substring(4, 6)}`;
+  await withDb(async (db) => {
+    const delZeroFee = async (table, where, label) => {
+      const rows = await db.all(`SELECT count(*) AS n FROM ${table} WHERE ${where}`);
+      const n = Number(rows[0]?.n ?? 0);
+      if (n > 0) {
+        await db.run(`DELETE FROM ${table} WHERE ${where}`);
+        console.log(`已清理${label}（过户费=0）: ${n} 条`);
+      }
+    };
+    await delZeroFee(
+      TABLE.TRADE_RECORD,
+      `transfer_fee = 0 AND substr(entry_date, 1, 7) = '${ym}'`,
+      "当月交易记录",
+    );
+    await delZeroFee(
+      TABLE.TRADE_MATCHED,
+      `(sell_transfer_fee = 0 OR buy_transfer_fee = 0) AND strftime(sell_time, '%Y-%m') = '${ym}'`,
+      "当月匹配记录",
+    );
+  });
+
   await syncTrade(startDate, endDate);
 
   // 匹配交易记录（先买后卖，仅盈利）

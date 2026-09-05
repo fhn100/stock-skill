@@ -22,7 +22,7 @@ category: finance
 | 数据库初始化 | `node init-db.js` | 初始化表结构并同步账户信息（幂等） |
 | 交易记录同步 | `node sync.js [start] [end]` | 同步交易记录，日期格式 `YYYYMMDD`；自动分页、重试 3 次、幂等 |
 | 交易记录匹配 | `node match.js [start] [end]` | 匹配买入/卖出，范围应 ≤ 同步范围 |
-| 收益统计 | `node profit.js [startMonth] [endMonth]` | 查询网格收益，月份格式 `YYYY-MM`；年收益 = 年初至截止月累计 |
+| 收益统计 | `node profit.js [startMonth] [endMonth]` | 查询网格收益，月份格式 `YYYY-MM`；年收益 = 年初至截止月累计。执行时先**自动清理当月过户费=0 的脏记录**（交易+匹配表，随后 sync 重拉修复费用），再同步匹配统计；历史月份的 0 过户费记录需单独 `sync.js` 指定范围重拉 |
 | 实时行情 | `node quotes.js [account]` | 持仓实时行情，实时 API 无需同步 |
 | 账户收益 | `node account-profit.js [account] [--json]` | 总资产、持有盈亏、当日盈亏，实时 API |
 | 未匹配查询 | `node unmatched.js [--code] [--name] [--op] [--start] [--end] [--account]` | 查询未配对交易记录 |
