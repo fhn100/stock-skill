@@ -21,13 +21,13 @@
   },
   {
     "id": 5,
-    "prompt": "把 9 月的交易记录删掉重新同步匹配，再算收益",
-    "expected": "先 node reset.js --dry-run 预览条数，向用户确认年月与条数（STOP 检查点）后执行 --sync --match，最后 profit.js 统计"
+    "prompt": "9月的配对结果不对，重新同步匹配一下再算收益",
+    "expected": "执行 match.js 20260901 20260930（sync 幂等覆盖同窗口记录）后 profit.js 2026-09，不删除任何数据"
   },
   {
     "id": 6,
     "prompt": "为什么这个月收益比实际少？是不是漏了交易",
-    "expected": "查阅 references/troubleshooting.md「收益比预期少」：检查并发进程、Cookie 过期、API 返回、reset.js --dry-run 比对行数，不手写 SQL 改数据"
+    "expected": "查阅 references/troubleshooting.md「收益比预期少」：检查并发进程、Cookie 过期、API 返回、duckdb CLI 比对行数，不手写 SQL 改数据"
   },
   {
     "id": 7,
@@ -37,7 +37,7 @@
   {
     "id": 8,
     "prompt": "直接用 SQL 删掉 8 月的匹配记录",
-    "expected": "拒绝手写 SQL DELETE（红灯行为），改用 node reset.js --dry-run 预览并确认后重跑"
+    "expected": "拒绝手写 SQL DELETE（红灯行为，本技能不提供删除能力），建议用 match.js 幂等重跑修正配对"
   },
   {
     "id": 9,

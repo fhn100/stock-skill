@@ -26,9 +26,10 @@ category: finance
 | 实时行情 | `node quotes.js [account]` | 持仓实时行情，实时 API 无需同步 |
 | 账户收益 | `node account-profit.js [account] [--json]` | 总资产、持有盈亏、当日盈亏，实时 API |
 | 未匹配查询 | `node unmatched.js [--code] [--name] [--op] [--start] [--end] [--account]` | 查询未配对交易记录 |
-| 数据重置重跑 | `node reset.js [options]` | 备份后删除指定年月记录，可选重跑 sync/match |
 
-**📋 触发词与动作映射**：首次使用/init → 初始化流程；同步、拉取交易 → `sync.js`；匹配、配对 → `match.js`；收益、赚了多少、网格收益 → `profit.js`；行情、持仓、最新价 → `quotes.js`；账户收益、总资产、当日盈亏 → `account-profit.js`；删除、清空、重跑、重算 → `reset.js --dry-run` → 确认 → `--sync --match`。
+**📋 触发词与动作映射**：首次使用/init → 初始化流程；同步、拉取交易 → `sync.js`；匹配、配对 → `match.js`；收益、赚了多少、网格收益 → `profit.js`；行情、持仓、最新价 → `quotes.js`；账户收益、总资产、当日盈亏 → `account-profit.js`；重跑、重新匹配 → `match.js [起止日期]`。
+
+**⚠️ 不提供删除能力**：本技能没有删除交易/匹配记录的工具，也禁止手写 SQL DELETE。数据修正一律通过幂等的 sync/match 重跑覆盖完成。
 
 ## 标准工作流
 
@@ -111,39 +112,17 @@ node account-profit.js --json     # JSON 格式（便于程序消费）
 
 实时调用 `stock_card` 接口，无需提前同步；末尾「汇总」行的当日收益率按 当日盈亏/(总资产-当日盈亏) 加权计算。回复用户时同样转为 Markdown 表格（账户名称/总资产/持有盈亏/当日盈亏/当日收益率 + 汇总行）。
 
-### 场景：重置并重跑某月数据（reset → profit）
+### 场景：重跑某月配对（不删数据）
 
-用户要求「删除本月/某月的交易记录和匹配记录，重新同步并匹配，再统计收益」时使用 `reset.js`。脚本会先备份数据库，再按年月精确删除两张表的记录，然后重新拉取该时间段的自动存单流水。
+配对结果不对或想纳入新对手盘时，**不删数据**，直接重跑匹配（sync 幂等，会覆盖同窗口记录）：
 
 ```bash
 cd ~/.agents/skills/stock-skill/scripts
-
-# 步骤0：预览将被删除的记录数（--dry-run 不写入）
-node reset.js --dry-run --start 20260901 --end 20260930
-
-# 🔴 STOP · 检查点：删除前必须确认范围与条数
-# 执行前询问："将删除 YYYY-MM 的交易记录 N 条、匹配记录 M 条（已自动备份），确认继续？"
-
-# 步骤1：备份 + 删除 + 重新同步 + 重新匹配
-node reset.js --sync --match --start 20260901 --end 20260930
-
-# 步骤2：统计收益
+node match.js 20260901 20260930
 node profit.js 2026-09
 ```
 
-| 参数 | 说明 |
-|------|------|
-| `--start` / `--end` | 闭区间，格式 `YYYYMMDD`；缺省为当月 1 日～今天 |
-| `--months` | 直接指定年月列表，如 `--months 2026-07,2026-08,2026-09`（优先于 start/end） |
-| `--dry-run` | 只输出待删除行数，不做任何修改 |
-| `--settle N` | 结束日期往前推 N 天（T+N 结算）。重跑历史月份必用，否则结束日期会落在未来 |
-| `--skip-sync` / `--skip-match` | 只删不改，或删后不重新匹配 |
-| `--no-backup` / `--force` | 跳过备份 / 忽略进程互斥（均不建议） |
-
-注意：
-- 每次执行都会生成 `~/.duckdb/stock/backup/stock.<时间戳>.db`，误删可用它恢复；
-- 如果只想让历史配对用上同窗口内新对手盘，不必删数据，直接重跑 `node match.js <start> <end>` 即可；
-- 旧版 `purge-month.js` 已被 `reset.js` 取代（且不支持未来日期，会静默删到月末）。
+注意：`sync.js` 采用 INSERT OR REPLACE 幂等写入，同窗口重跑即数据修正的唯一手段。
 
 ### 场景：同步历史数据
 
@@ -196,7 +175,6 @@ FROM t_trade_record WHERE entry_date = current_date ORDER BY entry_time
 | account-profit | Markdown 表格：账户名称/总资产/持有盈亏/当日盈亏/当日收益率，末尾附汇总行 |
 | sync | 成功：记录数+时间范围；失败：提示更新 Cookie |
 | match | 成功：匹配数量；部分未匹配：提示原因 |
-| reset | 每个年月输出待删/已删行数，备份路径，以及后续 sync/match 结果 |
 
 ## 数据速查
 
@@ -212,12 +190,12 @@ FROM t_trade_record WHERE entry_date = current_date ORDER BY entry_time
 
 - 账户超 1000 条自动分页拉取（根据 API 返回的 max_page）
 - history_id 基于交易数据生成，确保幂等性
-- 手动删记录会绕过幂等保护：删前必备份（`reset.js` 已默认备份）
+- 不支持手动删记录：无删除工具且禁止手写 SQL DELETE，修正数据靠幂等重跑 sync/match
 
 ## 🔴 红线速查
 
-- **不要**手写 SQL DELETE / 手动 INSERT 修改数据 → 用 `node reset.js`（内置备份 + 并发保护）
+- **不要**手写 SQL DELETE / 手动 INSERT 修改数据（无删除工具，修正数据靠幂等重跑 sync/match）
 - **不要**跳过 match 直接查收益（未匹配记录不计入收益）
-- **不要**同时运行多个 sync/match/reset 进程（DuckDB 单写者锁会静默丢写入）
+- **不要**同时运行多个 sync/match 进程（DuckDB 单写者锁会静默丢写入）
 
 完整禁例清单与危险动作见 [references/anti-patterns.md](references/anti-patterns.md)；同步/匹配/收益/行情故障排查见 [references/troubleshooting.md](references/troubleshooting.md)。
