@@ -16,16 +16,17 @@ const args = process.argv.slice(2);
 const start = args[0] || getCurrentMonth();
 const end = args[1] || start;
 
-try {
-  // 同步当月交易记录
-  const { startDate, endDate } = getDefaultDateRange();
-  console.log(`同步范围：${startDate} ~ ${endDate}`);
-
-  // 清理脏数据（过户费=0 的旧快照）：
-  // - 匹配记录：清理【查询月份范围】内的记录 → tradeMatch 会用交易表的最新费用重新配对（安全）
-  // - 交易记录：仅清理【同步窗口（当月）】内的记录 → syncTrade 立即重拉补回；
-  //   查询范围内其他月份不删（无法重拉，避免丢失数据），仅提示
-  const ym = `${startDate.substring(0, 4)}-${startDate.substring(4, 6)}`;
+/**
+ * 清理脏数据（过户费=0 的旧快照）：
+ * - 匹配记录：清理【查询月份范围】内的记录 → tradeMatch 会用交易表的最新费用重新配对（安全）
+ * - 交易记录：仅清理【同步窗口（当月）】内的记录 → syncTrade 立即重拉补回；
+ *   查询范围内其他月份不删（无法重拉，避免丢失数据），仅提示
+ * @param {string} start - 查询起始月 YYYY-MM
+ * @param {string} end - 查询结束月 YYYY-MM
+ * @param {string} syncStartDate - 同步窗口起始日 YYYYMMDD
+ */
+async function cleanDirtyFees(start, end, syncStartDate) {
+  const ym = `${syncStartDate.substring(0, 4)}-${syncStartDate.substring(4, 6)}`;
   const months = [];
   {
     let [y, m] = start.split("-").map(Number);
@@ -70,6 +71,14 @@ try {
       }
     }
   });
+}
+
+try {
+  // 同步当月交易记录
+  const { startDate, endDate } = getDefaultDateRange();
+  console.log(`同步范围：${startDate} ~ ${endDate}`);
+
+  await cleanDirtyFees(start, end, startDate);
 
   await syncTrade(startDate, endDate);
 

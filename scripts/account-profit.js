@@ -9,7 +9,7 @@
 
 import { apiPost, getAccounts, filterAccounts } from "./api-client.js";
 import { API_PATH } from "./constants.js";
-import { maskAccountName } from "./utils.js";
+import { maskAccountName, printApiError } from "./utils.js";
 
 // ============================ 数据获取 ============================
 
@@ -122,11 +122,7 @@ try {
     console.log("");
   }
 } catch (e) {
-  console.error("获取账户收益失败:", e.message);
-  if (e.code === "NETWORK_ERROR") {
-    console.error("提示: 请检查网络连接");
-  } else if (e.code === "API_ERROR" || e.code === "COOKIE_EXPIRED") {
-    console.error("提示: Cookie 可能已过期，请重新配置");
-  }
+  console.error("获取账户收益失败:");
+  printApiError(e);
   process.exit(1);
 }

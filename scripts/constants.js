@@ -54,7 +54,6 @@ export const DICT_TYPE = { FUND_KEY: "fund_key" };
 // ============================ Cookie 校验 ============================
 
 export const COOKIE_REQUIRED_FIELDS = ["userid", "v"];
-export const COOKIE_EXPIRY_SECONDS = 86400;
 
 // ============================ 同步与匹配 ============================
 

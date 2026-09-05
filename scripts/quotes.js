@@ -7,6 +7,7 @@
  */
 
 import { getQuotes } from "./quotes-api.js";
+import { printApiError } from "./utils.js";
 
 // 解析命令行参数
 const args = process.argv.slice(2);
@@ -51,11 +52,7 @@ try {
     console.log("暂无持仓数据");
   }
 } catch (e) {
-  console.error("获取行情失败:", e.message);
-  if (e.code === "NETWORK_ERROR") {
-    console.error("提示: 请检查网络连接");
-  } else if (e.code === "API_ERROR" || e.code === "COOKIE_EXPIRED") {
-    console.error("提示: Cookie 可能已过期，请重新配置");
-  }
+  console.error("获取行情失败:");
+  printApiError(e);
   process.exit(1);
 }

@@ -14,7 +14,7 @@
 
 ### 前置条件
 
-1. **Node.js** v20+（推荐 v20.20.2）
+1. **Node.js** v20+（v24 已验证可用，2026-09）
 2. **opencli** CLI 工具
 
 ### 安装 nvm 和 Node.js
@@ -98,7 +98,7 @@ node sync.js
 # 匹配交易记录
 node match.js
 
-# 查看本月收益
+# 查看本月收益（自动清理 0 过户费脏数据并修复）
 node profit.js
 
 # 查看实时行情
@@ -113,7 +113,7 @@ node quotes.js
 | `node init-db.js` | 无 | 初始化数据库表结构 |
 | `node sync.js` | `[startDate] [endDate]` | 同步交易记录，日期格式 YYYYMMDD |
 | `node match.js` | `[startDate] [endDate]` | 匹配买卖记录 |
-| `node profit.js` | `[startMonth] [endMonth]` | 查询收益，月份格式 YYYY-MM |
+| `node profit.js` | `[startMonth] [endMonth]` | 查询收益，月份格式 `YYYY-MM`；自动清理 0 过户费脏数据：匹配记录按查询月份范围清理重配，交易记录仅当月清理重拉 |
 | `node quotes.js` | `[account]` | 查询实时行情，account 可选 |
 | `node account-profit.js` | `[account] [--json]` | 查询账户收益卡片，--json 输出 JSON |
 | `node unmatched.js` | `[--code] [--name] [--op] [--start] [--end] [--account]` | 查询未匹配交易记录 |
@@ -158,39 +158,36 @@ node quotes.js
 
 ## 故障排除
 
-### Cookie 过期
+### Cookie 失效
 
-**症状**：同步失败，提示 Cookie 错误
+**症状**：同步失败，API 返回鉴权错误（脚本只校验 Cookie 必要字段，无 24 小时时间戳限制；实测 Cookie 可长期有效）
 
 **解决**：
 ```bash
 opencli stock init
 ```
 
-### 数据库损坏
+### 数据异常 / 需要重算
 
-**症状**：各种 SQL 错误
+**症状**：收益数字可疑、匹配结果与预期不符
 
-**解决**：
+**解决**（sync/match 均为幂等操作，直接重跑即可，**禁止手写 SQL DELETE 修复数据**）：
 ```bash
-# 备份
-cp ~/.duckdb/stock/stock.db ~/.duckdb/stock/stock.db.bak
-
-# 重新初始化
-cd ~/.agents/skills/stock-skill/scripts && node init-db.js
-
-# 重新同步
+# 重拉交易记录（INSERT OR REPLACE，按 history_id 幂等覆盖）
 node sync.js 20250101 $(date +%Y%m%d)
 
-# 重新匹配（算法/数据变更后，先清空匹配表再重跑，否则旧配对不会重算）
-duckdb ~/.duckdb/stock/stock.db -c "DELETE FROM t_trade_matched_record;"
+# 重跑匹配（只配对未匹配记录；费用字段以交易表最新数据为准）
+# 注：已存在的旧配对不会自动重算；0 过户费的旧配对由 profit.js 查询时自动清理重建
 node match.js 20250101 $(date +%Y%m%d)
+
+# 重查收益（自动清理查询范围内 0 过户费脏数据）
+node profit.js 2026-01 $(date +%Y-%m)
 ```
 
 ### 同步失败
 
 **检查顺序**：
-1. Cookie 是否过期
+1. Cookie 是否失效（API 返回鉴权错误时 `opencli stock init`）
 2. 网络是否正常
 3. 日期格式是否正确
 4. 是否 API 限流（等待 30 秒重试）
@@ -208,9 +205,12 @@ node match.js 20250101 $(date +%Y%m%d)
 
 ```
 stock-skill/
-├── SKILL.md           # 技能定义
+├── SKILL.md           # 技能定义（agent 入口文档）
 ├── README.md          # 本文档
-├── test-prompts.json  # 测试用例
+├── test-prompts.json  # 触发测试用例
+├── references/        # 详细参考（故障排除/反模式）
+│   ├── troubleshooting.md
+│   └── anti-patterns.md
 ├── resources/
 │   └── stock/         # opencli 插件
 │       ├── init.js    # Cookie 获取脚本
@@ -241,13 +241,13 @@ stock-skill/
 cd ~/.agents/skills/stock-skill/scripts
 
 # 测试同步
-node sync.js 20260601 20260630
+node sync.js 20260901 20260930
 
 # 测试匹配
-node match.js 20260601 20260630
+node match.js 20260901 20260930
 
 # 测试收益查询
-node profit.js 2026-06
+node profit.js 2026-09
 
 # 测试行情查询
 node quotes.js

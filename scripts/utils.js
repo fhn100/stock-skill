@@ -1,6 +1,6 @@
 import fs from "fs";
 import { join } from "path";
-import { COOKIE_REQUIRED_FIELDS, COOKIE_EXPIRY_SECONDS } from "./constants.js";
+import { COOKIE_REQUIRED_FIELDS } from "./constants.js";
 
 // ============================ 路径 & 配置 ============================
 
@@ -50,9 +50,10 @@ export function getUserId() {
 }
 
 /**
- * 检查 Cookie 是否可能过期（前置检查）
- * 通过检查 Cookie 中是否包含必要字段来判断有效性
- * @throws {AppError} Cookie 过期或无效时抛出
+ * 检查 Cookie 是否有效（前置检查）
+ * 仅校验必要字段是否存在；不做时间戳过期判断（实际 Cookie 有效期远超 24h，
+ * 真实过期由 API 返回 error_code 非 0 体现，走重试/报错路径）
+ * @throws {AppError} Cookie 缺少必要字段时抛出
  */
 export function checkCookieValid() {
   const cookie = getCookie();
@@ -62,17 +63,6 @@ export function checkCookieValid() {
     if (!cookie.includes(`${field}=`)) {
       throw new AppError(
         `Cookie 可能已过期，缺少字段 "${field}"。请运行 opencli stock init 重新获取`,
-        "COOKIE_EXPIRED",
-      );
-    }
-  }
-
-  const vMatch = cookie.match(/v=([^;]+)/);
-  if (vMatch?.[1]) {
-    const timestamp = parseInt(vMatch[1], 10);
-    if (timestamp > 0 && Date.now() / 1000 > timestamp + COOKIE_EXPIRY_SECONDS) {
-      throw new AppError(
-        "Cookie 已过期（超过24小时）。请运行 opencli stock init 重新获取",
         "COOKIE_EXPIRED",
       );
     }
@@ -164,6 +154,17 @@ function lastDayOfMonth(yyyymmdd) {
   return `${yyyy}${String(mm + 1).padStart(2, "0")}${String(lastDay).padStart(2, "0")}`;
 }
 
+/**
+ * 日期格式化：YYYYMMDD 或 YYYY-MM-DD → YYYY-MM-DD
+ * @param {string} [d] - 日期字符串
+ * @returns {string|null} YYYY-MM-DD 格式，空入参返回 null
+ */
+export function fmtDate(d) {
+  if (!d) return null;
+  if (d.includes("-")) return d;
+  return `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`;
+}
+
 // ============================ 错误处理 ============================
 
 /**
@@ -180,6 +181,19 @@ export class AppError extends Error {
     this.name = 'AppError';
     this.code = code;
     this.httpStatus = httpStatus;
+  }
+}
+
+/**
+ * CLI 入口统一错误输出（网络/Cookie 提示）
+ * @param {Error} e - 捕获到的错误
+ */
+export function printApiError(e) {
+  console.error(e.message);
+  if (e.code === "NETWORK_ERROR") {
+    console.error("提示: 请检查网络连接");
+  } else if (e.code === "API_ERROR" || e.code === "COOKIE_EXPIRED") {
+    console.error("提示: Cookie 可能已过期，请重新配置（opencli stock init）");
   }
 }
 

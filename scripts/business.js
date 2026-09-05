@@ -14,7 +14,25 @@ import {
   CREATE_DICT, CREATE_TRADE_RECORD, CREATE_TRADE_MATCHED
 } from "./sql-schema.js";
 import { INSERT_ACCOUNT } from "./sql-sync.js";
-import { LOAD_UNMATCHED_TRADES, INSERT_MATCHED } from "./sql-match.js";
+import { LOAD_UNMATCHED_TRADES, MATCHED_COLUMNS } from "./sql-match.js";
+
+/**
+ * 批量插入匹配结果（与 batchInsertTrades 同款分批策略）
+ * @param {object} conn - 数据库连接
+ * @param {Array<Array>} rows - 行数据数组
+ */
+async function batchInsertMatched(conn, rows) {
+  if (rows.length === 0) return;
+  const BATCH_SIZE = 500;
+  for (let i = 0; i < rows.length; i += BATCH_SIZE) {
+    const batch = rows.slice(i, i + BATCH_SIZE);
+    const placeholders = batch.map(() =>
+      `(${MATCHED_COLUMNS.map(() => "?").join(",")})`,
+    ).join(",");
+    const sql = `INSERT INTO ${TABLE.TRADE_MATCHED} (${MATCHED_COLUMNS.join(",")}) VALUES ${placeholders}`;
+    await conn.run(sql, batch.flat());
+  }
+}
 
 // ============================ 数据库初始化 ============================
 
@@ -340,9 +358,9 @@ export async function tradeMatch({ netFilter = true } = {}) {
 
     const pairs = greedyMatch(buys, sells);
 
-    for (const { buy, sell } of pairs) {
+    const insertRows = pairs.map(({ buy, sell }) => {
       const profit = sell.netMoney - buy.netMoney;
-      await conn.run(INSERT_MATCHED, [
+      return [
         buy.account_id, buy.account_name,
         String(sell.entry_ts.getFullYear()),
         `${sell.entry_ts.getFullYear()}-${String(sell.entry_ts.getMonth() + 1).padStart(2, "0")}`,
@@ -354,8 +372,9 @@ export async function tradeMatch({ netFilter = true } = {}) {
         profit,
         fmtDateTime(sell.entry_ts), fmtDateTime(buy.entry_ts),
         sell.history_id, buy.history_id,
-      ]);
-    }
+      ];
+    });
+    await batchInsertMatched(conn, insertRows);
 
     const usedSell = new Set(pairs.map((p) => p.sell.history_id));
     const usedBuy = new Set(pairs.map((p) => p.buy.history_id));
@@ -413,12 +432,15 @@ function summarizeUnmatched(unBuys, unSells, allBuys, allSells) {
 // ============================ 收益查询 ============================
 
 /**
- * 查询网格收益
- * @param {string} startMonth - 开始月份 YYYY-MM
- * @param {string} endMonth - 结束月份 YYYY-MM
+ * 查询网格收益（默认当年 1 月 ~ 12 月）
+ * @param {string} [startMonth] - 开始月份 YYYY-MM，默认当年 01
+ * @param {string} [endMonth] - 结束月份 YYYY-MM，默认当年 12
  */
-export async function gridProfit(startMonth = '2026-01', endMonth = '2026-12') {
+export async function gridProfit(startMonth, endMonth) {
+  const year = new Date().getFullYear();
+  const start = startMonth || `${year}-01`;
+  const end = endMonth || `${year}-12`;
   return await withDb(async (conn) => {
-    return await conn.all(GRID_PROFIT, [endMonth, startMonth, endMonth, startMonth.substring(0, 4)]);
+    return await conn.all(GRID_PROFIT, [end, start, end, start.substring(0, 4)]);
   });
 }

@@ -148,17 +148,19 @@ export async function getQuotes(accountNameFilter) {
   }
 
   const userId = getUserId();
-  const results = [];
 
-  for (const account of accounts) {
-    try {
-      const stocks = await processAccount(userId, account);
-      results.push(...stocks);
-    } catch (error) {
-      const name = maskAccountName(account.manualname);
-      console.error(`获取账户 ${name} 行情失败:`, error.message);
-    }
-  }
+  // 并行拉取所有账户（纯 API 调用，无 DB 操作，无写锁风险），保持账户顺序
+  const accountResults = await Promise.all(
+    accounts.map(async (account) => {
+      try {
+        return { stocks: await processAccount(userId, account), error: null };
+      } catch (error) {
+        const name = maskAccountName(account.manualname);
+        console.error(`获取账户 ${name} 行情失败:`, error.message);
+        return { stocks: [], error };
+      }
+    }),
+  );
 
-  return results;
+  return accountResults.flatMap((r) => r.stocks);
 }

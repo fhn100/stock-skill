@@ -32,14 +32,16 @@ export const LOAD_UNMATCHED_TRADES = `
 `;
 
 /**
- * 插入匹配结果
+ * 匹配结果插入列定义（批量 INSERT 使用，列顺序即绑定参数顺序）
+ */
+export const MATCHED_COLUMNS = [
+  "account_id", "account_name", "trans_year", "trans_month", "code", "name",
+  "sell_entry_price", "buy_entry_price", "sell_entry_count", "buy_entry_count",
+  "sell_entry_money", "buy_entry_money", "sell_transfer_fee", "buy_transfer_fee",
+  "profit", "sell_time", "buy_time", "sell_history_id", "buy_history_id",
+];
+
+/**
+ * 插入匹配结果列定义（供批量 INSERT 使用）
  * profit = 卖出净额 - 买入净额（净额含佣金与过户费）
  */
-export const INSERT_MATCHED = `
-  INSERT INTO ${TABLE.TRADE_MATCHED}
-    (account_id, account_name, trans_year, trans_month, code, name,
-     sell_entry_price, buy_entry_price, sell_entry_count, buy_entry_count,
-     sell_entry_money, buy_entry_money, sell_transfer_fee, buy_transfer_fee,
-     profit, sell_time, buy_time, sell_history_id, buy_history_id)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`;

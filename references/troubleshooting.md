@@ -7,7 +7,7 @@
 **症状**：`node sync.js` 报错或返回空数据
 
 **检查顺序**：
-1. **Cookie 是否过期？** → 检查 `~/.duckdb/stock/config` 文件修改时间，超过 24 小时执行 `opencli stock init`
+1. **Cookie 是否无效？** → 脚本只校验必要字段（userid/v），无时间戳过期限制；若 API 返回鉴权错误，执行 `opencli stock init` 重新获取
 2. **网络是否正常？** → 执行 `curl -s https://tzzb.10jqka.com.cn` 测试连通性
 3. **日期格式是否正确？** → 必须是 `YYYYMMDD`，如 `20260627`
 4. **脚本目录是否正确？** → 必须在 `~/.agents/skills/stock-skill/scripts/` 下执行
@@ -42,7 +42,7 @@
 
 **检查顺序**：
 1. **是否有并发进程？** → `pgrep -af "(sync|match)\.js"`；有则等它跑完再重跑
-2. **Cookie 是否过期？** → 检查 `~/.duckdb/stock/config` 修改时间，超过 24 小时执行 `opencli stock init`
+2. **Cookie 是否无效？** → 同上，API 报鉴权错误时执行 `opencli stock init`
 3. **API 返回是否为空？** → `curl` 拉一次存单接口看 `errcode`/`total`（正常 `errcode:0`、`success:true`），区分"真没交易"和"鉴权/限流失败"
 4. **本地记录与 API 不一致？** → 用 duckdb CLI 比对该月行数：`~/.local/bin/duckdb ~/.duckdb/stock/stock.db -c "SELECT count(*) FROM t_trade_record WHERE substr(entry_date,1,7)='YYYY-MM';"`，再重跑 `node match.js <start> <end>` 幂等修正
 5. **仍未恢复？** → 从 `~/.duckdb/stock/backup/` 取最近一份备份覆盖后全量重跑

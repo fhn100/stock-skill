@@ -13,7 +13,7 @@
 
 import { withDb } from "./db.js";
 import { TABLE, OP } from "./constants.js";
-import { maskAccountName } from "./utils.js";
+import { maskAccountName, fmtDate, getDefaultDateRange } from "./utils.js";
 
 // ============================ 参数解析 ============================
 
@@ -69,34 +69,13 @@ function printUsage() {
   node unmatched.js --start 20260101 --end 20260630  # 指定时间范围`);
 }
 
-// ============================ 日期工具 ============================
-
-/** YYYYMMDD → YYYY-MM-DD */
-function fmtDate(d) {
-  if (!d) return null;
-  if (d.includes("-")) return d;
-  return `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`;
-}
-
-function getDefaultDateRange() {
-  const now = new Date();
-  const yyyy = now.getFullYear();
-  const mm = String(now.getMonth() + 1).padStart(2, "0");
-  const lastDay = new Date(yyyy, now.getMonth() + 1, 0).getDate();
-  const dd = String(lastDay).padStart(2, "0");
-  return {
-    start: `${yyyy}${mm}01`,
-    end: `${yyyy}${mm}${dd}`,
-  };
-}
-
 // ============================ 主逻辑 ============================
 
 async function main() {
   const opts = parseArgs();
   const defaults = getDefaultDateRange();
-  const start = opts.start || defaults.start;
-  const end = opts.end || defaults.end;
+  const start = opts.start || defaults.startDate;
+  const end = opts.end || defaults.endDate;
 
   // 校验 op 参数
   if (opts.op && !["buy", "sell"].includes(opts.op)) {
