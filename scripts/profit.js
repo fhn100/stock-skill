@@ -21,9 +21,22 @@ try {
   const { startDate, endDate } = getDefaultDateRange();
   console.log(`同步范围：${startDate} ~ ${endDate}`);
 
-  // 清理脏数据：删除同步窗口内过户费为 0 的记录（接口费用数据有误的历史快照），
-  // 随后 syncTrade 会立即重拉补回；范围限定当月，避免丢失历史记录
+  // 清理脏数据（过户费=0 的旧快照）：
+  // - 匹配记录：清理【查询月份范围】内的记录 → tradeMatch 会用交易表的最新费用重新配对（安全）
+  // - 交易记录：仅清理【同步窗口（当月）】内的记录 → syncTrade 立即重拉补回；
+  //   查询范围内其他月份不删（无法重拉，避免丢失数据），仅提示
   const ym = `${startDate.substring(0, 4)}-${startDate.substring(4, 6)}`;
+  const months = [];
+  {
+    let [y, m] = start.split("-").map(Number);
+    const [ey, em] = end.split("-").map(Number);
+    for (let i = 0; i < 1200 && (y < ey || (y === ey && m <= em)); i++) {
+      months.push(`${y}-${String(m).padStart(2, "0")}`);
+      m += 1;
+      if (m > 12) { m = 1; y += 1; }
+    }
+  }
+  const monthList = months.map((x) => `'${x}'`).join(",");
   await withDb(async (db) => {
     const delZeroFee = async (table, where, label) => {
       const rows = await db.all(`SELECT count(*) AS n FROM ${table} WHERE ${where}`);
@@ -33,16 +46,29 @@ try {
         console.log(`已清理${label}（过户费=0）: ${n} 条`);
       }
     };
+    // 1) 匹配记录：查询月份范围（重配后自动带上交易表最新费用）
+    await delZeroFee(
+      TABLE.TRADE_MATCHED,
+      `(sell_transfer_fee = 0 OR buy_transfer_fee = 0) AND strftime(sell_time, '%Y-%m') IN (${monthList})`,
+      `查询范围匹配记录 [${months[0]}~${months[months.length - 1]}]`,
+    );
+    // 2) 交易记录：仅同步窗口（当月，syncTrade 重拉补回）
     await delZeroFee(
       TABLE.TRADE_RECORD,
       `transfer_fee = 0 AND substr(entry_date, 1, 7) = '${ym}'`,
       "当月交易记录",
     );
-    await delZeroFee(
-      TABLE.TRADE_MATCHED,
-      `(sell_transfer_fee = 0 OR buy_transfer_fee = 0) AND strftime(sell_time, '%Y-%m') = '${ym}'`,
-      "当月匹配记录",
-    );
+    // 3) 查询范围内其他月份的 0 过户费交易记录：只提示不删
+    const others = months.filter((x) => x !== ym);
+    if (others.length > 0) {
+      const rows = await db.all(
+        `SELECT count(*) AS n FROM ${TABLE.TRADE_RECORD} WHERE transfer_fee = 0 AND substr(entry_date, 1, 7) IN (${others.map((x) => `'${x}'`).join(",")})`,
+      );
+      const n = Number(rows[0]?.n ?? 0);
+      if (n > 0) {
+        console.log(`⚠️  查询范围内另有 ${n} 条历史月份交易记录过户费=0（未自动清理）；如需修复费用，执行: node sync.js ${others[0].replace("-", "")}01 ${others[others.length - 1].replace("-", "")}31 后再重查`);
+      }
+    }
   });
 
   await syncTrade(startDate, endDate);
