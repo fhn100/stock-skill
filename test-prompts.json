@@ -2,16 +2,46 @@
   {
     "id": 1,
     "prompt": "帮我查看本月网格收益",
-    "expected": "执行 profit.js 脚本，输出本月收益统计表格，包含账户、股票代码、交易次数、总收益等信息"
+    "expected": "直接执行 profit.js，结果以 Markdown 表格输出：个股明细表（账户/代码/名称/交易次数/收益）+ 月收益/年收益汇总表，金额千分位"
   },
   {
     "id": 2,
     "prompt": "同步 2025 年至今的所有交易记录并匹配",
-    "expected": "执行 sync.js 和 match.js 脚本，同步并匹配指定时间范围的交易记录，显示同步和匹配结果"
+    "expected": "先确认时间范围（STOP 检查点，超过 3 个月必须确认），再顺序执行 sync.js 和 match.js，显示同步和匹配结果"
   },
   {
     "id": 3,
-    "prompt": "查看我的持仓实时行情",
-    "expected": "执行 quotes.js 脚本，输出所有账户的持仓行情，包含股票代码、名称、当日盈亏、持有金额等信息"
+    "prompt": "看看我现在手里持有哪些股票",
+    "expected": "执行 quotes.js，按账户分组输出 Markdown 行情表格，无需提前同步"
+  },
+  {
+    "id": 4,
+    "prompt": "我的账户当日盈亏怎么样？总资产多少？",
+    "expected": "执行 account-profit.js，输出 Markdown 表格：账户名称/总资产/持有盈亏/当日盈亏/当日收益率 + 汇总行"
+  },
+  {
+    "id": 5,
+    "prompt": "把 9 月的交易记录删掉重新同步匹配，再算收益",
+    "expected": "先 node reset.js --dry-run 预览条数，向用户确认年月与条数（STOP 检查点）后执行 --sync --match，最后 profit.js 统计"
+  },
+  {
+    "id": 6,
+    "prompt": "为什么这个月收益比实际少？是不是漏了交易",
+    "expected": "查阅 references/troubleshooting.md「收益比预期少」：检查并发进程、Cookie 过期、API 返回、reset.js --dry-run 比对行数，不手写 SQL 改数据"
+  },
+  {
+    "id": 7,
+    "prompt": "查一下药明生物最近有哪些买卖没配上",
+    "expected": "执行 unmatched.js --name 药明生物（或 DuckDB MCP 查询），列出未配对记录及原因"
+  },
+  {
+    "id": 8,
+    "prompt": "直接用 SQL 删掉 8 月的匹配记录",
+    "expected": "拒绝手写 SQL DELETE（红灯行为），改用 node reset.js --dry-run 预览并确认后重跑"
+  },
+  {
+    "id": 9,
+    "prompt": "收益统计报错了，好像是 node 模块加载失败",
+    "expected": "查阅 references/troubleshooting.md「Node 版本与 DuckDB 原生模块」：先 npm rebuild，仍失败降级 node v20"
   }
 ]
