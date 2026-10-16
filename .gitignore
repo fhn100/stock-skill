@@ -1,3 +1,6 @@
+# IDE 配置（切窗口/换项目就会产生噪音 diff）
+.idea/
+
 # 依赖目录
 node_modules/
 
