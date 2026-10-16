@@ -30,7 +30,7 @@ export const API_PATH = {
 // ============================ HTTP Headers ============================
 
 export const HTTP_HEADERS = {
-  USER_AGENT: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+  USER_AGENT: "Mozilla/5.0 (X11; Linux x86_84) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
   CONTENT_TYPE: "application/x-www-form-urlencoded; charset=UTF-8",
   ORIGIN: "https://tzzb.10jqka.com.cn",
   REFERER: "https://tzzb.10jqka.com.cn/pc/index.html",
@@ -53,12 +53,25 @@ export const DICT_TYPE = { FUND_KEY: "fund_key" };
 
 // ============================ Cookie 校验 ============================
 
-export const COOKIE_REQUIRED_FIELDS = ["userid", "v"];
+export const COOKIE_REQUIRED_FIELDS = ["userid", "ticket", "sess_tk", "v"];
 
 // ============================ 同步与匹配 ============================
 
-export const SYNC_CONCURRENCY = 3;
+/**
+ * 同步并发数
+ * 同花顺 tzzb 前置 Nginx 对单 IP 有限流，并发拉取极易触发 403，故串行。
+ */
+export const SYNC_CONCURRENCY = 1;
 
 // ============================ 网络请求 ============================
 
 export const FETCH_TIMEOUT_MS = 10000;
+
+/** 两次请求之间的最小间隔（ms），避免瞬时突发触发风控 */
+export const REQUEST_MIN_INTERVAL_MS = 1500;
+
+/** 命中 403（Nginx 风控）时的退避序列（ms） */
+export const THROTTLE_BACKOFF_MS = [5000, 15000, 30000, 60000];
+
+/** 403 最大重试次数 */
+export const THROTTLE_MAX_RETRIES = 4;
