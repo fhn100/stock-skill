@@ -67,7 +67,9 @@ async function cleanDirtyFees(start, end, syncStartDate) {
       );
       const n = Number(rows[0]?.n ?? 0);
       if (n > 0) {
-        console.log(`⚠️  查询范围内另有 ${n} 条历史月份交易记录过户费=0（未自动清理）；如需修复费用，执行: node sync.js ${others[0].replace("-", "")}01 ${others[others.length - 1].replace("-", "")}31 后再重查`);
+        const lastMonth = others[others.length - 1];
+        const lastDay = new Date(Number(lastMonth.slice(0, 4)), Number(lastMonth.slice(5, 7)), 0).getDate();
+        console.log(`⚠️  查询范围内另有 ${n} 条历史月份交易记录过户费=0（未自动清理）；如需修复费用，执行: node sync.js ${others[0].replace("-", "")}01 ${lastMonth.replace("-", "")}${lastDay} 后再重查`);
       }
     }
   });

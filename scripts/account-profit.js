@@ -67,6 +67,8 @@ export async function getAccountProfits(accountNameFilter) {
 
   for (const { account, card, error } of cardResults) {
     if (error || !card) continue;
+    // 过滤持有盈亏为 0 的账户（不计入明细与汇总）
+    if (card.profit === 0) continue;
     const accountName = maskAccountName(account.manualname);
     results.push({
       账户名称: accountName,
