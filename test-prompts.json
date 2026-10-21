@@ -22,7 +22,7 @@
   {
     "id": 5,
     "prompt": "为什么这个月收益比实际少？是不是漏了交易",
-    "expected": "查阅 references/troubleshooting.md「收益比预期少」：检查并发进程、Cookie 过期、API 返回、duckdb CLI 比对行数，不手写 SQL 改数据"
+    "expected": "先用 README「收益口径」解释差异：网格收益只含 op=1/2 现货买卖净额，逆回购收益与派息不计入；再 unmatched.js --all 查漏、检查并发进程与同步是否完整，用 duckdb 比对行数，不手写 SQL 改数据"
   },
   {
     "id": 6,
@@ -37,6 +37,11 @@
   {
     "id": 8,
     "prompt": "收益统计报错了，好像是 node 模块加载失败",
-    "expected": "查阅 references/troubleshooting.md「Node 版本与 DuckDB 原生模块」：先 npm rebuild，仍失败降级 node v20"
+    "expected": "按 README「故障排除」处理：先在 scripts 目录 npm rebuild，仍失败降级 node v20；不动数据库数据"
+  },
+  {
+    "id": 9,
+    "prompt": "帮我更新一下 Cookie / 跑 opencli stock init",
+    "expected": "说明该命令已移除：本地不落 Cookie 文件，sync 复用浏览器登录态；引导在浏览器登录 https://tzzb.10jqka.com.cn/pc/index.html 后重跑 opencli stock sync，不要臆造命令"
   }
 ]

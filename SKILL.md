@@ -6,27 +6,26 @@ category: finance
 
 # 股票交易技能
 
-基于 `opencli stock` 插件获取 Cookie，使用 Node.js 脚本管理股票交易数据。
+基于 `opencli stock` 插件复用浏览器登录态同步交易数据，本地用 DuckDB 做匹配与收益统计。
 
 ## 环境
 
 - **脚本目录**：`~/.agents/skills/stock-skill/scripts/`（所有命令必须在此目录下执行）
-- **数据库**：`~/.duckdb/stock/stock.db`｜**Cookie 配置**：`~/.duckdb/stock/config`｜**备份**：`~/.duckdb/stock/backup/`
-- **Node 版本**：node v24 可正常运行（2026-09 验证）；若遇 DuckDB 原生模块加载错误，先 `npm rebuild`，仍失败再降级 node v20，详见 [references/troubleshooting.md](references/troubleshooting.md)
+- **数据库**：`~/.duckdb/stock/stock.db`（唯一落盘数据；**本地不保存任何凭证**，联网只由 `opencli stock sync` 在浏览器上下文内发起）
+- **Node 版本**：node v24 可正常运行（2026-09 验证）；若遇 DuckDB 原生模块加载错误，先 `npm rebuild`，仍失败再降级 node v20，详见 [README.md 故障排除](README.md#故障排除)
 
 ## 命令总览
 
 | 功能 | 命令 | 说明 |
 |------|------|------|
-| Cookie 获取 | `opencli stock init` | 通过浏览器获取 Cookie 并写入配置文件 |
-| 交易记录同步 | `opencli stock sync [start] [end]` | 建表 + 同步账户字典 + 拉取交易记录，日期格式 `YYYYMMDD`（默认当月）；自动分页、幂等 |
+| 交易记录同步 | `opencli stock sync [start] [end]` | 复用浏览器登录态（策略 COOKIE）拉取数据；需先在浏览器登录 `https://tzzb.10jqka.com.cn/pc/index.html`。建表 + 同步账户字典 + 交易记录，日期格式 `YYYYMMDD`（默认当月）；自动分页、幂等 |
 | 仅初始化表结构 | `opencli stock init-db` | 只建表建索引（sync 启动时已自动执行） |
 | 交易记录匹配 | `node match.js` | 匹配本地库中未配对的买入/卖出（纯本地，不联网） |
 | 收益统计 | `node profit.js [startMonth] [endMonth]` | 查询网格收益，月份格式 `YYYY-MM`；年收益 = 年初至截止月累计。执行时先清理**查询范围内** 0 过户费的匹配记录，再调用与 `match.js` 相同的 `tradeMatch()`（对全库未匹配记录重算配对，不止查询范围）；0 过户费的交易记录只统计提示，需 `opencli stock sync` 重拉修复；纯本地，不联网 |
 | 未匹配查询 | `node unmatched.js [--code] [--name] [--op] [--start] [--end] [--account] [--all]` | 默认只列可配对记录（op=1/2 且数量>0），与 `match.js` 口径一致；`--all` 含逆回购/派息等非买卖流水 |
 | 纯函数自测 | `node --test selftest.js` | 校验匹配算法、净额口径、日期与表格工具（不碰数据库） |
 
-**📋 触发词与动作映射**：首次使用/init → 初始化流程；同步、拉取交易 → `opencli stock sync`；匹配、配对 → `match.js`；收益、赚了多少、网格收益 → `profit.js`；未匹配、为什么没配上 → `unmatched.js`；重跑、重新匹配 → `node match.js`。
+**📋 触发词与动作映射**：首次使用/初始化 → 首次使用流程（插件就位 + 浏览器登录 + sync）；同步、拉取交易 → `opencli stock sync`；匹配、配对 → `match.js`；收益、赚了多少、网格收益 → `profit.js`；未匹配、为什么没配上 → `unmatched.js`；重跑、重新匹配 → `node match.js`。
 
 **本技能已不联网**：`scripts/` 下的脚本全部只读写本地 DuckDB；实时行情与账户收益卡片能力已下线，联网只有 `opencli stock sync` 一条路径。
 
@@ -40,16 +39,13 @@ category: finance
 
 ```bash
 # 🔴 STOP · 检查点：首次使用前确认环境
-# 执行前询问："首次使用需要初始化，确认继续？"
+# 执行前询问："首次使用需要初始化并同步当月数据，确认继续？"
 
-# 1. 检查 opencli stock 插件是否存在，不存在则自动复制
-ls ~/.opencli/plugins/stock/init.js || cp -r ~/.agents/skills/stock-skill/resources/stock ~/.opencli/plugins/stock
+# 1. 确认 opencli stock 插件已就位（未就位则复制仓库 resources/stock 到插件目录）
+ls ~/.opencli/plugins/stock/sync.js || cp -r ~/.agents/skills/stock-skill/resources/stock ~/.opencli/plugins/stock
 
-# 2. 获取 Cookie
-opencli stock init
-
-# 🔴 STOP · 检查点：Cookie 获取后确认
-# 执行前询问："Cookie 已获取，确认初始化数据库并同步当月数据？"
+# 2. 确认浏览器已登录同花顺投资决策页（sync 复用该登录态，本地不落凭证）
+#    未登录时先在浏览器打开并登录 https://tzzb.10jqka.com.cn/pc/index.html
 
 # 3. 建表 + 同步账户与当月交易记录
 opencli stock sync
@@ -73,7 +69,7 @@ node profit.js [YYYY-MM] [YYYY-MM]
 - **结果必须以 Markdown 表格输出给用户**（收益等统计结果均适用），格式见下方「输出格式」
 
 **边界处理：**
-- Cookie 过期：同步失败时提示执行 `opencli stock init` 更新 Cookie
+- 登录态失效：`sync` 报 `AuthRequiredError` / HTTP 401/403 时，提示在浏览器重新登录 `https://tzzb.10jqka.com.cn/pc/index.html` 后重试（无本地 Cookie 文件可更新）
 - 网络异常：提示检查网络连接后重试
 - 无数据：提示是否需要同步历史数据
 
@@ -151,7 +147,7 @@ FROM t_trade_record WHERE entry_date = current_date ORDER BY entry_time
 | 命令 | 输出格式 |
 |------|----------|
 | profit | 脚本原始输出为纯文本表格；**回复用户时必须转为 Markdown 表格**：个股明细表（账户/代码/名称/交易次数/收益）+ 汇总表（月收益/年收益），金额千分位格式化 |
-| sync | `opencli stock sync`：成功：记录数+时间范围；失败：提示更新 Cookie |
+| sync | `opencli stock sync`：成功：记录数+时间范围；失败：区分登录态失效（提示浏览器重新登录）与风控限流（降低频率重试） |
 | match | 成功：匹配数量；部分未匹配：提示原因 |
 
 ## 数据速查
@@ -176,4 +172,4 @@ FROM t_trade_record WHERE entry_date = current_date ORDER BY entry_time
 - **不要**跳过 match 直接查收益（未匹配记录不计入收益）
 - **不要**同时运行多个 sync/match 进程（DuckDB 单写者锁会静默丢写入）
 
-完整禁例清单与危险动作见 [references/anti-patterns.md](references/anti-patterns.md)；同步/匹配/收益故障排查见 [references/troubleshooting.md](references/troubleshooting.md)。
+故障排查见 [README.md 故障排除](README.md#故障排除)；命令清单与口径以本文件「命令总览」「收益口径」「红线速查」为准。

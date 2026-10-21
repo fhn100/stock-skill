@@ -2,7 +2,7 @@
   "name": "opencli-plugin-stock",
   "version": "0.2.0",
   "type": "module",
-  "description": "OpenCLI plugin: 股票交易 Cookie 获取插件",
+  "description": "OpenCLI plugin: 股票交易数据同步（建表 + 账户字典 + 交易记录）",
   "peerDependencies": {
     "@jackwener/opencli": ">=1.0.0"
   }

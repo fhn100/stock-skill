@@ -1,10 +1,10 @@
 # 股票交易技能 (stock-skill)
 
-基于 `opencli stock` 插件获取 Cookie，使用 Node.js 脚本管理股票交易数据。
+基于 `opencli stock` 插件复用浏览器登录态同步交易数据，本地用 DuckDB 做匹配与收益统计。
 
 ## 功能
 
-- 🍪 **Cookie 获取**：通过浏览器自动获取 Cookie
+- 🔄 **数据同步**：复用浏览器登录态自动分页同步交易记录（本地不落任何凭证）
 - 📊 **数据同步**：自动分页同步交易记录
 - 🔗 **交易匹配**：自动匹配买卖记录（时间差最小优先，仅盈利配对）
 - 💰 **收益统计**：查询网格收益
@@ -71,8 +71,7 @@ cd ~/.agents/skills/stock-skill/scripts && npm install
 ### 首次使用
 
 ```bash
-# 1. 获取 Cookie（需要浏览器）
-opencli stock init
+# 1. 在浏览器登录 https://tzzb.10jqka.com.cn/pc/index.html（sync 复用该登录态）
 
 # 2. 建表 + 同步账户与交易记录（幂等，日期格式 YYYYMMDD）
 opencli stock sync 20250101 20260627
@@ -103,9 +102,8 @@ node unmatched.js
 
 | 命令 | 参数 | 说明 |
 |------|------|------|
-| `opencli stock init` | 无 | 获取 Cookie，自动安装插件 |
 | `opencli stock init-db` | 无 | 只初始化本地 DuckDB 表结构（sync 已自动执行） |
-| `opencli stock sync` | `[startDate] [endDate]` | 同步账户与交易记录，日期格式 YYYYMMDD，默认当月 |
+| `opencli stock sync` | `[startDate] [endDate]` | 复用浏览器登录态同步账户与交易记录，日期格式 YYYYMMDD，默认当月；需先登录同花顺投资决策页 |
 | `node match.js` | 无 | 匹配本地库中未配对的买卖记录（纯本地） |
 | `node profit.js` | `[startMonth] [endMonth]` | 查询收益，月份格式 `YYYY-MM`；先按查询月份范围清理 0 过户费的匹配记录，再全库重算未匹配配对；交易记录只统计提示（需 `opencli stock sync` 重拉修复）；纯本地 |
 | `node unmatched.js` | `[--code] [--name] [--op] [--start] [--end] [--account] [--all]` | 查询未配对记录，默认与配对口径一致（op=1/2 且数量>0）；`--all` 含逆回购/派息等非买卖流水 |
@@ -122,7 +120,6 @@ node unmatched.js
 | 项目 | 路径 |
 |------|------|
 | 数据库 | `~/.duckdb/stock/stock.db` |
-| 配置文件 | `~/.duckdb/stock/config` |
 | 脚本目录 | `~/.agents/skills/stock-skill/scripts/` |
 
 ## 数据库表结构
@@ -157,14 +154,13 @@ node unmatched.js
 
 ## 故障排除
 
-### Cookie 失效
+### 浏览器登录态失效
 
-**症状**：同步失败，API 返回鉴权错误（脚本只校验 Cookie 必要字段，无 24 小时时间戳限制；实测 Cookie 可长期有效）
+**症状**：`opencli stock sync` 报 `AuthRequiredError`，或接口返回 HTTP 401 / 403（含 "Nginx forbidden"）
 
-**解决**：
-```bash
-opencli stock init
-```
+**解决**：在浏览器打开并登录 `https://tzzb.10jqka.com.cn/pc/index.html`，然后重跑 sync。sync 复用浏览器登录态发起请求，本地不落 Cookie 文件，因此没有「更新 Cookie」这一步。
+
+> 403 也可能是 Nginx 风控限流而非登录态问题：降低请求频率、缩小同步区间后重试。
 
 ### 数据异常 / 需要重算
 
@@ -186,7 +182,7 @@ node profit.js 2026-01 $(date +%Y-%m)
 ### 同步失败
 
 **检查顺序**：
-1. Cookie 是否失效（API 返回鉴权错误时 `opencli stock init`）
+1. 浏览器是否已登录同花顺投资决策页（报 `AuthRequiredError` / 401 时重新登录）
 2. 网络是否正常
 3. 日期格式是否正确
 4. 是否 API 限流（等待 30 秒重试）
@@ -207,13 +203,9 @@ stock-skill/
 ├── SKILL.md           # 技能定义（agent 入口文档）
 ├── README.md          # 本文档
 ├── test-prompts.json  # 触发测试用例
-├── references/        # 详细参考（故障排除/反模式）
-│   ├── troubleshooting.md
-│   └── anti-patterns.md
 ├── resources/
-│   └── stock/         # opencli 插件
-│       ├── init.js    # Cookie 获取 + 本地 DuckDB 表结构初始化
-│       └── sync.js    # 账户与交易记录同步（幂等）
+│   └── stock/         # opencli 插件（~/.opencli/plugins/stock 指向此目录的软链）
+│       └── sync.js    # 浏览器登录态复用 + 账户与交易记录同步（幂等）+ init-db 建表
 └── scripts/           # 本地脚本（全部不联网，只读写本地 DuckDB）
     ├── business.js    # 业务逻辑（匹配/收益）
     ├── db.js          # 数据库连接
