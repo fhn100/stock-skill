@@ -8,7 +8,7 @@
 - 📊 **数据同步**：自动分页同步交易记录
 - 🔗 **交易匹配**：自动匹配买卖记录（时间差最小优先，仅盈利配对）
 - 💰 **收益统计**：查询网格收益
-- 📈 **实时行情**：获取持仓实时行情
+- 🔍 **未匹配排查**：查询未配对的买卖记录
 
 ## 安装
 
@@ -95,8 +95,8 @@ cd ~/.agents/skills/stock-skill/scripts
 node match.js
 node profit.js
 
-# 查看实时行情
-node quotes.js
+# 排查未匹配记录
+node unmatched.js
 ```
 
 ## 命令参考
@@ -108,8 +108,6 @@ node quotes.js
 | `opencli stock sync` | `[startDate] [endDate]` | 同步账户与交易记录，日期格式 YYYYMMDD，默认当月 |
 | `node match.js` | 无 | 匹配本地库中未配对的买卖记录（纯本地） |
 | `node profit.js` | `[startMonth] [endMonth]` | 查询收益，月份格式 `YYYY-MM`；自动清理 0 过户费脏数据：匹配记录按查询月份范围清理重配，交易记录只统计提示（需 `opencli stock sync` 重拉修复）；纯本地 |
-| `node quotes.js` | `[account]` | 查询实时行情，account 可选 |
-| `node account-profit.js` | `[account] [--json]` | 查询账户收益卡片，--json 输出 JSON |
 | `node unmatched.js` | `[--code] [--name] [--op] [--start] [--end] [--account]` | 查询未匹配交易记录 |
 
 ## 数据存储
@@ -209,20 +207,16 @@ stock-skill/
 │   └── stock/         # opencli 插件
 │       ├── init.js    # Cookie 获取 + 本地 DuckDB 表结构初始化
 │       └── sync.js    # 账户与交易记录同步（幂等）
-└── scripts/           # 本地脚本（不再联网同步）
-    ├── api-client.js  # 共享 HTTP 客户端（行情/账户实时接口）
+└── scripts/           # 本地脚本（全部不联网，只读写本地 DuckDB）
     ├── business.js    # 业务逻辑（匹配/收益）
     ├── db.js          # 数据库连接
     ├── utils.js       # 工具函数
     ├── constants.js   # 常量定义
     ├── sql-match.js   # 匹配 SQL
     ├── sql-profit.js  # 收益 SQL
-    ├── quotes-api.js  # 行情 API
     ├── match.js       # 交易匹配入口
     ├── profit.js      # 收益查询入口
-    ├── quotes.js      # 行情查询入口
-    ├── account-profit.js  # 账户收益入口
-    ├── unmatched.js   # 未匹配记录查询
+    └── unmatched.js   # 未匹配记录查询
 ```
 
 ### 运行测试
@@ -237,8 +231,8 @@ cd ~/.agents/skills/stock-skill/scripts && node match.js
 # 测试收益查询
 node profit.js 2026-09
 
-# 测试行情查询
-node quotes.js
+# 测试未匹配查询
+node unmatched.js --start 20260901 --end 20260930
 ```
 
 ## 许可证

@@ -1,6 +1,6 @@
 ---
 name: stock-skill
-description: "股票交易数据管理：同步交易记录、匹配买卖、统计网格收益、查询实时行情、账户收益、排查未匹配记录。触发词：收益、网格收益、赚了多少、同步、匹配、行情、持仓、账户收益、总资产、当日盈亏、未匹配、重跑、profit、stock"
+description: "股票交易数据管理：同步交易记录、匹配买卖、统计网格收益、排查未匹配记录。触发词：收益、网格收益、赚了多少、同步、匹配、未匹配、重跑、profit、stock"
 category: finance
 ---
 
@@ -23,11 +23,11 @@ category: finance
 | 仅初始化表结构 | `opencli stock init-db` | 只建表建索引（sync 启动时已自动执行） |
 | 交易记录匹配 | `node match.js` | 匹配本地库中未配对的买入/卖出（纯本地，不联网） |
 | 收益统计 | `node profit.js [startMonth] [endMonth]` | 查询网格收益，月份格式 `YYYY-MM`；年收益 = 年初至截止月累计。执行时自动清理查询范围内 0 过户费的**匹配记录**（重配即修复）；0 过户费的**交易记录**只统计提示，需 `opencli stock sync` 重拉修复（本脚本不再删除交易记录）；纯本地，不联网 |
-| 实时行情 | `node quotes.js [account]` | 持仓实时行情，实时 API 无需同步 |
-| 账户收益 | `node account-profit.js [account] [--json]` | 总资产、持有盈亏、当日盈亏，实时 API |
 | 未匹配查询 | `node unmatched.js [--code] [--name] [--op] [--start] [--end] [--account]` | 查询未配对交易记录 |
 
-**📋 触发词与动作映射**：首次使用/init → 初始化流程；同步、拉取交易 → `opencli stock sync`；匹配、配对 → `match.js`；收益、赚了多少、网格收益 → `profit.js`；行情、持仓、最新价 → `quotes.js`；账户收益、总资产、当日盈亏 → `account-profit.js`；重跑、重新匹配 → `node match.js`。
+**📋 触发词与动作映射**：首次使用/init → 初始化流程；同步、拉取交易 → `opencli stock sync`；匹配、配对 → `match.js`；收益、赚了多少、网格收益 → `profit.js`；未匹配、为什么没配上 → `unmatched.js`；重跑、重新匹配 → `node match.js`。
+
+**本技能已不联网**：`scripts/` 下的脚本全部只读写本地 DuckDB；实时行情与账户收益卡片能力已下线，联网只有 `opencli stock sync` 一条路径。
 
 **⚠️ 不提供删除能力**：本技能没有删除交易/匹配记录的工具，也禁止手写 SQL DELETE。数据修正一律通过幂等的 `opencli stock sync` / `node match.js` 重跑覆盖完成（`profit.js` 仅重配查询范围内 0 过户费的匹配记录，不删交易记录）。
 
@@ -67,7 +67,7 @@ node profit.js [YYYY-MM] [YYYY-MM]
 **执行规则**：
 - 用户说"这个月收益" → 直接执行 `node profit.js`
 - 用户说"同步并查看收益" / "最新收益" → 按顺序执行 sync → match → profit
-- **结果必须以 Markdown 表格输出给用户**（收益/持仓/账户等统计结果均适用），格式见下方「输出格式」
+- **结果必须以 Markdown 表格输出给用户**（收益等统计结果均适用），格式见下方「输出格式」
 
 **边界处理：**
 - Cookie 过期：同步失败时提示执行 `opencli stock init` 更新 Cookie
@@ -89,25 +89,6 @@ node profit.js [YYYY-MM] [YYYY-MM]
 | **月收益（2026-07）** | **6,654.73** |
 | 年收益（2026 累计） | 75,942.36 |
 ```
-
-### 场景：查看持仓实时行情
-
-```bash
-cd ~/.agents/skills/stock-skill/scripts
-node quotes.js          # 所有账户；node quotes.js 冯 指定账户
-```
-
-实时 API，无需提前同步。
-
-### 场景：查看账户收益
-
-```bash
-cd ~/.agents/skills/stock-skill/scripts
-node account-profit.js            # 所有账户；node account-profit.js 冯 指定账户
-node account-profit.js --json     # JSON 格式（便于程序消费）
-```
-
-实时调用 `stock_card` 接口，无需提前同步；末尾「汇总」行的当日收益率按 当日盈亏/(总资产-当日盈亏) 加权计算。回复用户时同样转为 Markdown 表格（账户名称/总资产/持有盈亏/当日盈亏/当日收益率 + 汇总行）。
 
 ### 场景：重跑某月配对（不删数据）
 
@@ -167,8 +148,6 @@ FROM t_trade_record WHERE entry_date = current_date ORDER BY entry_time
 | 命令 | 输出格式 |
 |------|----------|
 | profit | 脚本原始输出为纯文本表格；**回复用户时必须转为 Markdown 表格**：个股明细表（账户/代码/名称/交易次数/收益）+ 汇总表（月收益/年收益），金额千分位格式化 |
-| quotes | 按账户分组，每组末尾附汇总行，按当日盈亏率降序；转为 Markdown 表格 |
-| account-profit | Markdown 表格：账户名称/总资产/持有盈亏/当日盈亏/当日收益率，末尾附汇总行 |
 | sync | `opencli stock sync`：成功：记录数+时间范围；失败：提示更新 Cookie |
 | match | 成功：匹配数量；部分未匹配：提示原因 |
 
@@ -194,4 +173,4 @@ FROM t_trade_record WHERE entry_date = current_date ORDER BY entry_time
 - **不要**跳过 match 直接查收益（未匹配记录不计入收益）
 - **不要**同时运行多个 sync/match 进程（DuckDB 单写者锁会静默丢写入）
 
-完整禁例清单与危险动作见 [references/anti-patterns.md](references/anti-patterns.md)；同步/匹配/收益/行情故障排查见 [references/troubleshooting.md](references/troubleshooting.md)。
+完整禁例清单与危险动作见 [references/anti-patterns.md](references/anti-patterns.md)；同步/匹配/收益故障排查见 [references/troubleshooting.md](references/troubleshooting.md)。

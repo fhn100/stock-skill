@@ -11,36 +11,31 @@
   },
   {
     "id": 3,
-    "prompt": "看看我现在手里持有哪些股票",
-    "expected": "执行 quotes.js，按账户分组输出 Markdown 行情表格，无需提前同步"
+    "prompt": "看看我现在手里持有哪些股票，当日盈亏多少",
+    "expected": "说明实时行情与账户收益卡片能力已下线（scripts 全部不联网），不得臆造行情/总资产数据；可改用 opencli stock sync + node profit.js 查本地已配对的网格收益，或用 unmatched.js 看未配对持仓"
   },
   {
     "id": 4,
-    "prompt": "我的账户当日盈亏怎么样？总资产多少？",
-    "expected": "执行 account-profit.js，输出 Markdown 表格：账户名称/总资产/持有盈亏/当日盈亏/当日收益率 + 汇总行"
-  },
-  {
-    "id": 5,
     "prompt": "9月的配对结果不对，重新同步匹配一下再算收益",
     "expected": "执行 match.js 20260901 20260930（sync 幂等覆盖同窗口记录）后 profit.js 2026-09，不删除任何数据"
   },
   {
-    "id": 6,
+    "id": 5,
     "prompt": "为什么这个月收益比实际少？是不是漏了交易",
     "expected": "查阅 references/troubleshooting.md「收益比预期少」：检查并发进程、Cookie 过期、API 返回、duckdb CLI 比对行数，不手写 SQL 改数据"
   },
   {
-    "id": 7,
+    "id": 6,
     "prompt": "查一下药明生物最近有哪些买卖没配上",
     "expected": "执行 unmatched.js --name 药明生物（或 DuckDB MCP 查询），列出未配对记录及原因"
   },
   {
-    "id": 8,
+    "id": 7,
     "prompt": "直接用 SQL 删掉 8 月的匹配记录",
     "expected": "拒绝手写 SQL DELETE（红灯行为，本技能不提供删除能力），建议用 match.js 幂等重跑修正配对"
   },
   {
-    "id": 9,
+    "id": 8,
     "prompt": "收益统计报错了，好像是 node 模块加载失败",
     "expected": "查阅 references/troubleshooting.md「Node 版本与 DuckDB 原生模块」：先 npm rebuild，仍失败降级 node v20"
   }
