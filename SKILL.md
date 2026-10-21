@@ -22,14 +22,17 @@ category: finance
 | 交易记录同步 | `opencli stock sync [start] [end]` | 建表 + 同步账户字典 + 拉取交易记录，日期格式 `YYYYMMDD`（默认当月）；自动分页、幂等 |
 | 仅初始化表结构 | `opencli stock init-db` | 只建表建索引（sync 启动时已自动执行） |
 | 交易记录匹配 | `node match.js` | 匹配本地库中未配对的买入/卖出（纯本地，不联网） |
-| 收益统计 | `node profit.js [startMonth] [endMonth]` | 查询网格收益，月份格式 `YYYY-MM`；年收益 = 年初至截止月累计。执行时自动清理查询范围内 0 过户费的**匹配记录**（重配即修复）；0 过户费的**交易记录**只统计提示，需 `opencli stock sync` 重拉修复（本脚本不再删除交易记录）；纯本地，不联网 |
-| 未匹配查询 | `node unmatched.js [--code] [--name] [--op] [--start] [--end] [--account]` | 查询未配对交易记录 |
+| 收益统计 | `node profit.js [startMonth] [endMonth]` | 查询网格收益，月份格式 `YYYY-MM`；年收益 = 年初至截止月累计。执行时先清理**查询范围内** 0 过户费的匹配记录，再调用与 `match.js` 相同的 `tradeMatch()`（对全库未匹配记录重算配对，不止查询范围）；0 过户费的交易记录只统计提示，需 `opencli stock sync` 重拉修复；纯本地，不联网 |
+| 未匹配查询 | `node unmatched.js [--code] [--name] [--op] [--start] [--end] [--account] [--all]` | 默认只列可配对记录（op=1/2 且数量>0），与 `match.js` 口径一致；`--all` 含逆回购/派息等非买卖流水 |
+| 纯函数自测 | `node --test selftest.js` | 校验匹配算法、净额口径、日期与表格工具（不碰数据库） |
 
 **📋 触发词与动作映射**：首次使用/init → 初始化流程；同步、拉取交易 → `opencli stock sync`；匹配、配对 → `match.js`；收益、赚了多少、网格收益 → `profit.js`；未匹配、为什么没配上 → `unmatched.js`；重跑、重新匹配 → `node match.js`。
 
 **本技能已不联网**：`scripts/` 下的脚本全部只读写本地 DuckDB；实时行情与账户收益卡片能力已下线，联网只有 `opencli stock sync` 一条路径。
 
-**⚠️ 不提供删除能力**：本技能没有删除交易/匹配记录的工具，也禁止手写 SQL DELETE。数据修正一律通过幂等的 `opencli stock sync` / `node match.js` 重跑覆盖完成（`profit.js` 仅重配查询范围内 0 过户费的匹配记录，不删交易记录）。
+**⚠️ 不提供删除能力**：本技能没有删除交易/匹配记录的工具，也禁止手写 SQL DELETE。数据修正一律通过幂等的 `opencli stock sync` / `node match.js` 重跑覆盖完成（`profit.js` 只删除查询范围内 0 过户费的匹配记录并立即重配，不删交易记录）。
+
+**📐 收益口径**：网格收益 = 现货买卖的净额价差之和（买入净成本含佣金过户费，卖出净所得扣费），**不含**国债逆回购收益（op=5/35）、现金分红（op=6）、缴税/转入转出等非买卖流水。与券商账户的总收益对账时会有差额，属预期口径而非丢数据。
 
 ## 标准工作流
 
@@ -158,8 +161,8 @@ FROM t_trade_record WHERE entry_date = current_date ORDER BY entry_time
 | 交易记录表 | `t_trade_record` |
 | 匹配记录表 | `t_trade_matched_record` |
 | 数据库索引 | `idx_trade_op_date`(op,entry_date), `idx_trade_code`, `idx_matched_sell_history`, `idx_matched_sell_time` 等 |
-| op='1' / op='2' | 买入 / 卖出（⚠️ 始终用 `op` 数字字段，`op_name` 不可靠） |
-| GC001（204001） | 国债逆回购，查询时排除 |
+| op 码 | `1`=买入、`2`=卖出（仅此两者参与配对）；`5`/`35`=逆回购买卖（代码 131810 R-001、204001 GC001）、`6`=派息、`95`=缴税、`18`/`86`=转入、`19`/`87`=转出、`222`=入账、`235`/`236`=0 成本入账类买卖（⚠️ 始终用 `op` 数字字段，`op_name` 不可靠） |
+| 配对范围 | 仅同账户 + 同代码 + 同成交数量可互配，不做数量拆分；逆回购/派息等不参与配对 |
 
 ## 注意事项
 

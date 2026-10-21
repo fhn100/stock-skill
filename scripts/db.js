@@ -36,6 +36,16 @@ class DatabaseManager {
   }
 
   /**
+   * 同步关闭连接（process "exit" 钩子内无法 await，只释放连接与文件锁）
+   */
+  closeConnSync() {
+    try {
+      this._conn?.close();
+    } catch (_) {}
+    this._conn = null;
+  }
+
+  /**
    * 正确关闭数据库连接并释放文件锁
    */
   async closeConnection() {
@@ -97,6 +107,7 @@ export async function withDb(fn) {
 }
 
 // 进程退出清理
+process.on("exit", () => dbManager.closeConnSync());
 process.on("SIGINT", async () => {
   try { await dbManager.closeConnection(); } catch (_) {}
   process.exit(0);

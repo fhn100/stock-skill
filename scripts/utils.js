@@ -33,11 +33,48 @@ export function getCurrentMonth() {
  */
 export function getDefaultDateRange() {
   const now = new Date();
-  const yyyy = now.getFullYear();
-  const mm = String(now.getMonth() + 1).padStart(2, "0");
-  const lastDay = new Date(yyyy, now.getMonth() + 1, 0).getDate();
-  const dd = String(lastDay).padStart(2, "0");
-  return { startDate: `${yyyy}${mm}01`, endDate: `${yyyy}${mm}${dd}` };
+  const ym = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}`;
+  return { startDate: `${ym}01`, endDate: `${ym}${lastDayOfMonth(ym)}` };
+}
+
+/**
+ * 某月最后一天
+ * @param {string} ym - YYYY-MM 或 YYYYMM
+ * @returns {string} 补零的日，如 "31"
+ */
+export function lastDayOfMonth(ym) {
+  const s = String(ym).replace("-", "");
+  const mm = Number(s.slice(4, 6));
+  if (mm < 1 || mm > 12) throw new Error(`月份非法: ${ym}`);
+  return String(new Date(Number(s.slice(0, 4)), mm, 0).getDate()).padStart(2, "0");
+}
+
+/**
+ * 起止月份展开为月份数组（含端点）
+ * @param {string} start - YYYY-MM
+ * @param {string} end - YYYY-MM
+ * @returns {string[]} YYYY-MM 列表；start 晚于 end 时为空数组
+ */
+export function monthRange(start, end) {
+  const months = [];
+  let [y, m] = start.split("-").map(Number);
+  const [ey, em] = end.split("-").map(Number);
+  for (let i = 0; i < 1200 && (y < ey || (y === ey && m <= em)); i++) {
+    months.push(`${y}-${String(m).padStart(2, "0")}`);
+    if (++m > 12) { m = 1; y += 1; }
+  }
+  return months;
+}
+
+/**
+ * 日期格式化：YYYYMMDD 或 YYYY-MM-DD → YYYY-MM-DD
+ * @param {string} [d] - 日期字符串
+ * @returns {string|null} YYYY-MM-DD 格式，空入参返回 null
+ */
+export function fmtDate(d) {
+  if (!d) return null;
+  if (d.includes("-")) return d;
+  return `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`;
 }
 
 // ============================ 脱敏工具 ============================
@@ -60,15 +97,42 @@ export function maskAccountName(accountName) {
   return accountName;
 }
 
-// ============================ 日期格式化 ============================
+// ============================ 文本表格 ============================
+
+/** CJK / 全角字符占 2 列显示宽度 */
+const WIDE_CHAR = /[\u1100-\u115F\u2E80-\u303E\u3041-\u33FF\u3400-\u4DBF\u4E00-\u9FFF\uA000-\uA4CF\uAC00-\uD7A3\uF900-\uFAFF\uFE30-\uFE6F\uFF00-\uFF60\uFFE0-\uFFE6]/;
 
 /**
- * 日期格式化：YYYYMMDD 或 YYYY-MM-DD → YYYY-MM-DD
- * @param {string} [d] - 日期字符串
- * @returns {string|null} YYYY-MM-DD 格式，空入参返回 null
+ * 字符串终端显示宽度（按显示列数，非字符数）
+ * @param {string} s
+ * @returns {number}
  */
-export function fmtDate(d) {
-  if (!d) return null;
-  if (d.includes("-")) return d;
-  return `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`;
+export function displayWidth(s) {
+  let w = 0;
+  for (const ch of String(s)) w += WIDE_CHAR.test(ch) ? 2 : 1;
+  return w;
+}
+
+/**
+ * 渲染纯文本表格：列宽按内容最大显示宽度对齐，末列不补尾随空格
+ * @param {string[]} headers - 表头
+ * @param {Array<string[]>} rows - 数据行（单元格均为字符串）
+ * @returns {string} 含上下分隔线的表格
+ */
+export function renderTable(headers, rows) {
+  const cell = (v) => (v === null || v === undefined ? "" : String(v));
+  const widths = headers.map((h, i) =>
+    Math.max(displayWidth(h), ...rows.map((r) => displayWidth(cell(r[i])))),
+  );
+  const rule = "─".repeat(widths.reduce((sum, w) => sum + w + 2, -2));
+  const line = (cells) =>
+    cells
+      .map((c, i) => {
+        const text = cell(c);
+        const pad = i === cells.length - 1 ? 0 : widths[i] - displayWidth(text);
+        return text + " ".repeat(Math.max(0, pad));
+      })
+      .join("  ");
+
+  return [rule, line(headers), rule, ...rows.map(line), rule].join("\n");
 }

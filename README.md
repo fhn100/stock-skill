@@ -107,8 +107,15 @@ node unmatched.js
 | `opencli stock init-db` | 无 | 只初始化本地 DuckDB 表结构（sync 已自动执行） |
 | `opencli stock sync` | `[startDate] [endDate]` | 同步账户与交易记录，日期格式 YYYYMMDD，默认当月 |
 | `node match.js` | 无 | 匹配本地库中未配对的买卖记录（纯本地） |
-| `node profit.js` | `[startMonth] [endMonth]` | 查询收益，月份格式 `YYYY-MM`；自动清理 0 过户费脏数据：匹配记录按查询月份范围清理重配，交易记录只统计提示（需 `opencli stock sync` 重拉修复）；纯本地 |
-| `node unmatched.js` | `[--code] [--name] [--op] [--start] [--end] [--account]` | 查询未匹配交易记录 |
+| `node profit.js` | `[startMonth] [endMonth]` | 查询收益，月份格式 `YYYY-MM`；先按查询月份范围清理 0 过户费的匹配记录，再全库重算未匹配配对；交易记录只统计提示（需 `opencli stock sync` 重拉修复）；纯本地 |
+| `node unmatched.js` | `[--code] [--name] [--op] [--start] [--end] [--account] [--all]` | 查询未配对记录，默认与配对口径一致（op=1/2 且数量>0）；`--all` 含逆回购/派息等非买卖流水 |
+| `node --test selftest.js` | 无 | 纯函数自测：匹配算法、净额口径、日期与表格工具 |
+
+## 收益口径
+
+网格收益 = 现货买卖（op=1/2）的净额价差之和：买入净成本含佣金与过户费，卖出净所得扣同一费用。配对要求同账户、同代码、同成交数量，不做数量拆分。
+
+因此收益**不含**国债逆回购收益（op=5/35，代码 131810 / 204001）、现金分红（op=6）与缴税、转入转出等流水，与券商账户总收益对账会有差额，属预期口径而非丢数据。
 
 ## 数据存储
 
@@ -129,7 +136,7 @@ node unmatched.js
 | account_name | VARCHAR | 账户名称 |
 | code | VARCHAR | 股票代码 |
 | name | VARCHAR | 股票名称 |
-| op | VARCHAR | 操作类型（'1'买入，'2'卖出） |
+| op | VARCHAR | 操作类型（'1'买入，'2'卖出；'5'/'35' 逆回购、'6' 派息、'95' 缴税等不参与配对） |
 | entry_price | DECIMAL | 成交价格 |
 | entry_count | VARCHAR | 成交数量 |
 | entry_money | DECIMAL | 成交金额 |
@@ -214,6 +221,7 @@ stock-skill/
     ├── constants.js   # 常量定义
     ├── sql-match.js   # 匹配 SQL
     ├── sql-profit.js  # 收益 SQL
+    ├── selftest.js    # 纯函数自测（node --test）
     ├── match.js       # 交易匹配入口
     ├── profit.js      # 收益查询入口
     └── unmatched.js   # 未匹配记录查询

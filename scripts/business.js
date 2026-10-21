@@ -1,34 +1,80 @@
 /**
  * 业务逻辑层
- * 交易匹配与收益查询（数据同步由 opencli stock sync 负责，本目录不再重复实现）
+ * 交易匹配与收益查询（数据同步由 opencli stock sync 负责，本目录不联网）
  */
 
 import { withDb } from "./db.js";
-import { TABLE, OP } from "./constants.js";
-import {
-  GRID_PROFIT
-} from "./sql-profit.js";
+import { TABLE, OP, INSERT_BATCH_SIZE } from "./constants.js";
+import { GRID_PROFIT } from "./sql-profit.js";
 import { LOAD_UNMATCHED_TRADES, MATCHED_COLUMNS } from "./sql-match.js";
 
 /**
  * 批量插入匹配结果（分批拼接 VALUES，避免单条语句参数过多）
- * @param {object} conn - 数据库连接
+ * @param {object} db - DatabaseManager
  * @param {Array<Array>} rows - 行数据数组
  */
-async function batchInsertMatched(conn, rows) {
-  if (rows.length === 0) return;
-  const BATCH_SIZE = 500;
-  for (let i = 0; i < rows.length; i += BATCH_SIZE) {
-    const batch = rows.slice(i, i + BATCH_SIZE);
-    const placeholders = batch.map(() =>
-      `(${MATCHED_COLUMNS.map(() => "?").join(",")})`,
-    ).join(",");
-    const sql = `INSERT INTO ${TABLE.TRADE_MATCHED} (${MATCHED_COLUMNS.join(",")}) VALUES ${placeholders}`;
-    await conn.run(sql, batch.flat());
+async function batchInsertMatched(db, rows) {
+  const placeholders = MATCHED_COLUMNS.map(() => "?").join(",");
+  const oneRow = `(${placeholders})`;
+  for (let i = 0; i < rows.length; i += INSERT_BATCH_SIZE) {
+    const batch = rows.slice(i, i + INSERT_BATCH_SIZE);
+    const sql = `INSERT INTO ${TABLE.TRADE_MATCHED} (${MATCHED_COLUMNS.join(",")}) VALUES ${
+      new Array(batch.length).fill(oneRow).join(",")
+    }`;
+    await db.run(sql, batch.flat());
   }
 }
 
 // ============================ 交易匹配 ============================
+
+/** 配对分组键：同账户 + 同代码 + 同数量才可互相配对（不做数量拆分） */
+const groupKey = (t) => `${t.account_id}|${t.code}|${t.entry_count}`;
+
+/**
+ * 按 key 分组
+ * @param {Array} list
+ * @param {(item: any) => string} keyFn
+ * @returns {Map<string, Array>}
+ */
+function groupBy(list, keyFn) {
+  const groups = new Map();
+  for (const item of list) {
+    const key = keyFn(item);
+    const bucket = groups.get(key);
+    if (bucket) bucket.push(item);
+    else groups.set(key, [item]);
+  }
+  return groups;
+}
+
+/** 时间升序，并列按 history_id 保证确定性 */
+const byTime = (a, b) =>
+  a.entry_ts.getTime() - b.entry_ts.getTime() || a.history_id.localeCompare(b.history_id);
+
+/**
+ * 单笔流水的净额（含佣金与过户费）
+ * 过户费等于成交额时为接口脏数据（港股及部分账户快照），按 0 费用处理。
+ * 买入为净成本（加费用），卖出为净所得（减费用）。
+ * @param {object} t - 交易记录
+ * @returns {number}
+ */
+export function netMoneyOf(t) {
+  const fee = Number(t.entry_money) === Number(t.transfer_fee)
+    ? 0
+    : Number(t.transfer_fee);
+  const total = Number(t.entry_money) + fee + Number(t.commission);
+  return t.op === OP.BUY ? total : 2 * Number(t.entry_money) - total;
+}
+
+/**
+ * 配对盈利判定口径
+ * @param {object} t - 交易记录
+ * @param {boolean} netFilter - true 用净额（与 profit 一致），false 用毛额
+ * @returns {number}
+ */
+export function matchMoneyOf(t, netFilter) {
+  return netFilter ? netMoneyOf(t) : Number(t.entry_money);
+}
 
 /**
  * 最短持有匹配（时间差最小优先，LIFO）
@@ -41,107 +87,106 @@ async function batchInsertMatched(conn, rows) {
  * @param {Array} sells - 未匹配卖出记录
  * @returns {Array<{buy: Object, sell: Object}>} 匹配对
  */
-function greedyMatch(buys, sells) {
-  // 按 (account_id, code, entry_count) 分组
-  const groups = new Map();
-  for (const b of buys) {
-    const key = `${b.account_id}|${b.code}|${b.entry_count}`;
-    if (!groups.has(key)) groups.set(key, { buys: [], sells: [] });
-    groups.get(key).buys.push(b);
-  }
-  for (const s of sells) {
-    const key = `${s.account_id}|${s.code}|${s.entry_count}`;
-    if (!groups.has(key)) groups.set(key, { buys: [], sells: [] });
-    groups.get(key).sells.push(s);
-  }
-
+export function greedyMatch(buys, sells) {
+  const buyGroups = groupBy(buys, groupKey);
   const pairs = [];
-  for (const { buys: gBuys, sells: gSells } of groups.values()) {
-    if (gBuys.length === 0 || gSells.length === 0) continue;
 
-    // 按时间升序，并列按 history_id 保证确定性
-    gBuys.sort((a, b) => a.entry_ts.getTime() - b.entry_ts.getTime() || a.history_id.localeCompare(b.history_id));
-    gSells.sort((a, b) => a.entry_ts.getTime() - b.entry_ts.getTime() || a.history_id.localeCompare(b.history_id));
+  for (const [key, gSells] of groupBy(sells, groupKey)) {
+    const gBuys = buyGroups.get(key);
+    if (!gBuys) continue;
+
+    gBuys.sort(byTime);
+    gSells.sort(byTime);
 
     const avail = [];
     let bi = 0;
     for (const sell of gSells) {
-      while (bi < gBuys.length && gBuys[bi].entry_ts.getTime() <= sell.entry_ts.getTime()) {
-        avail.push(gBuys[bi]);
-        bi++;
-      }
-      // 找买入时间最新（时间差最小）且盈利的买入
-      let best = -1;
-      let bestTime = -Infinity;
-      for (let i = 0; i < avail.length; i++) {
-        if (avail[i].matchMoney < sell.matchMoney && avail[i].entry_ts.getTime() > bestTime) {
-          best = i;
-          bestTime = avail[i].entry_ts.getTime();
+      while (bi < gBuys.length && byTime(gBuys[bi], sell) <= 0) avail.push(gBuys[bi++]);
+      // 从可用买入里取时间最新（即 avail 尾部反向扫描）且盈利的买入
+      for (let i = avail.length - 1; i >= 0; i--) {
+        if (avail[i].matchMoney < sell.matchMoney) {
+          pairs.push({ buy: avail.splice(i, 1)[0], sell });
+          break;
         }
-      }
-      if (best >= 0) {
-        pairs.push({ buy: avail.splice(best, 1)[0], sell });
       }
     }
   }
   return pairs;
 }
 
-/** 格式化 Date → 'YYYY-MM-DD HH:MM:SS'（DuckDB TIMESTAMP 绑定用） */
-function fmtDateTime(d) {
-  const p = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+/** 未匹配原因分类统计（辅助诊断） */
+function summarizeUnmatched(unBuys, unSells, allBuys, allSells) {
+  const buyGroups = groupBy(allBuys, groupKey);
+  const sellGroups = groupBy(allSells, groupKey);
+
+  const countBy = (list, groups, otherOf, comparable) => {
+    let noPeer = 0;
+    let noProfit = 0;
+    for (const item of list) {
+      const peers = groups.get(groupKey(item)) || [];
+      if (peers.length === 0) { noPeer++; continue; }
+      if (!peers.some((p) => comparable(otherOf(item), p))) noProfit++;
+    }
+    return { noPeer, noProfit };
+  };
+
+  // 卖出：需要更早且更便宜的买入
+  const sells = countBy(
+    unSells, buyGroups, (s) => s,
+    (sell, buy) => buy.entry_ts.getTime() <= sell.entry_ts.getTime()
+      && buy.matchMoney < sell.matchMoney,
+  );
+  // 买入：需要更晚且更贵的卖出
+  const buys = countBy(
+    unBuys, sellGroups, (b) => b,
+    (buy, sell) => sell.entry_ts.getTime() >= buy.entry_ts.getTime()
+      && buy.matchMoney < sell.matchMoney,
+  );
+
+  return {
+    sellNoBuy: sells.noPeer,
+    sellNoProfit: sells.noProfit,
+    buyNoSell: buys.noPeer,
+    buyNoProfit: buys.noProfit,
+  };
 }
 
 /**
  * 匹配交易记录（最短持有 / 时间差最小，单遍完成，无需迭代）
- * 净额 = entry_money ∓ (commission + transfer_fee)
+ * 对全库所有未匹配记录重算配对，不受调用方查询月份范围限制
  * @param {Object} [opts]
  * @param {boolean} [opts.netFilter=true] - 盈利判定用净额还是毛额
  *   true：买入净成本 < 卖出净所得（真实盈利，与 profit 一致）
  *   false：买入毛额 < 卖出毛额（覆盖更多对，但部分对 net profit 可能为负）
  */
 export async function tradeMatch({ netFilter = true } = {}) {
-  await withDb(async (conn) => {
-    const trades = (await conn.all(LOAD_UNMATCHED_TRADES)).map((t) => ({
+  await withDb(async (db) => {
+    const trades = (await db.all(LOAD_UNMATCHED_TRADES)).map((t) => ({
       ...t,
       // DuckDBTimestampValue {micros} → JS Date（epoch 毫秒）
       entry_ts: new Date(Number(t.entry_ts.micros / 1000n)),
+      netMoney: netMoneyOf(t),
+      matchMoney: matchMoneyOf(t, netFilter),
     }));
     const buys = trades.filter((t) => t.op === OP.BUY);
     const sells = trades.filter((t) => t.op === OP.SELL);
 
-    // 净额：买入成本含费，卖出所得扣费（profit 恒用净额）
-    // 港股（market_code=15）API 的 transfer_fee 字段等于成交额，非真实费用，跳过
-    const fee = (t) => (Number(t.entry_money) === Number(t.transfer_fee) ? 0 : Number(t.transfer_fee));
-    for (const b of buys) {
-      b.netMoney = b.entry_money + fee(b) + b.commission;
-      b.matchMoney = netFilter ? b.netMoney : b.entry_money;
-    }
-    for (const s of sells) {
-      s.netMoney = s.entry_money - fee(s) - s.commission;
-      s.matchMoney = netFilter ? s.netMoney : s.entry_money;
-    }
-
     const pairs = greedyMatch(buys, sells);
 
-    const insertRows = pairs.map(({ buy, sell }) => {
-      const profit = sell.netMoney - buy.netMoney;
-      return [
-        buy.account_id, buy.account_name,
-        String(sell.entry_ts.getFullYear()),
-        `${sell.entry_ts.getFullYear()}-${String(sell.entry_ts.getMonth() + 1).padStart(2, "0")}`,
-        buy.code, buy.name || sell.name,
-        sell.entry_price, buy.entry_price,
-        sell.entry_count, buy.entry_count,
-        sell.entry_money, buy.entry_money,
-        sell.transfer_fee, buy.transfer_fee,
-        profit,
-        fmtDateTime(sell.entry_ts), fmtDateTime(buy.entry_ts),
-        sell.history_id, buy.history_id,
-      ];
-    });
-    await batchInsertMatched(conn, insertRows);
+    const insertRows = pairs.map(({ buy, sell }) => [
+      buy.account_id, buy.account_name,
+      String(sell.entry_ts.getFullYear()),
+      `${sell.entry_ts.getFullYear()}-${String(sell.entry_ts.getMonth() + 1).padStart(2, "0")}`,
+      buy.code, buy.name || sell.name,
+      sell.entry_price, buy.entry_price,
+      sell.entry_count, buy.entry_count,
+      sell.entry_money, buy.entry_money,
+      sell.transfer_fee, buy.transfer_fee,
+      sell.netMoney - buy.netMoney,
+      fmtDateTime(sell.entry_ts), fmtDateTime(buy.entry_ts),
+      sell.history_id, buy.history_id,
+    ]);
+    await batchInsertMatched(db, insertRows);
 
     const usedSell = new Set(pairs.map((p) => p.sell.history_id));
     const usedBuy = new Set(pairs.map((p) => p.buy.history_id));
@@ -158,56 +203,22 @@ export async function tradeMatch({ netFilter = true } = {}) {
   });
 }
 
-/** 未匹配原因分类统计（辅助诊断） */
-function summarizeUnmatched(unBuys, unSells, allBuys, allSells) {
-  const buyGroups = new Map();
-  for (const b of allBuys) {
-    const key = `${b.account_id}|${b.code}|${b.entry_count}`;
-    if (!buyGroups.has(key)) buyGroups.set(key, []);
-    buyGroups.get(key).push(b);
-  }
-  const sellGroups = new Map();
-  for (const s of allSells) {
-    const key = `${s.account_id}|${s.code}|${s.entry_count}`;
-    if (!sellGroups.has(key)) sellGroups.set(key, []);
-    sellGroups.get(key).push(s);
-  }
-
-  let sellNoBuy = 0;
-  let sellNoProfit = 0;
-  for (const s of unSells) {
-    const key = `${s.account_id}|${s.code}|${s.entry_count}`;
-    const gb = buyGroups.get(key) || [];
-    if (gb.length === 0) { sellNoBuy++; continue; }
-    const has = gb.some((b) => b.entry_ts.getTime() <= s.entry_ts.getTime() && b.matchMoney < s.matchMoney);
-    if (!has) sellNoProfit++;
-  }
-
-  let buyNoSell = 0;
-  let buyNoProfit = 0;
-  for (const b of unBuys) {
-    const key = `${b.account_id}|${b.code}|${b.entry_count}`;
-    const gs = sellGroups.get(key) || [];
-    if (gs.length === 0) { buyNoSell++; continue; }
-    const has = gs.some((s) => s.entry_ts.getTime() >= b.entry_ts.getTime() && b.matchMoney < s.matchMoney);
-    if (!has) buyNoProfit++;
-  }
-
-  return { sellNoBuy, sellNoProfit, buyNoSell, buyNoProfit };
-}
-
 // ============================ 收益查询 ============================
 
+/** 格式化 Date → 'YYYY-MM-DD HH:MM:SS'（DuckDB TIMESTAMP 绑定用） */
+function fmtDateTime(d) {
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
 /**
- * 查询网格收益（默认当年 1 月 ~ 12 月）
- * @param {string} [startMonth] - 开始月份 YYYY-MM，默认当年 01
- * @param {string} [endMonth] - 结束月份 YYYY-MM，默认当年 12
+ * 查询网格收益（个股/月/年三层）
+ * @param {string} startMonth - 开始月份 YYYY-MM
+ * @param {string} endMonth - 结束月份 YYYY-MM
+ * @returns {Promise<Array>} 结果行
  */
 export async function gridProfit(startMonth, endMonth) {
-  const year = new Date().getFullYear();
-  const start = startMonth || `${year}-01`;
-  const end = endMonth || `${year}-12`;
-  return await withDb(async (conn) => {
-    return await conn.all(GRID_PROFIT, [end, start, end, start.substring(0, 4)]);
-  });
+  return await withDb(async (db) =>
+    await db.all(GRID_PROFIT, [endMonth, startMonth, endMonth, startMonth.substring(0, 4)]),
+  );
 }
