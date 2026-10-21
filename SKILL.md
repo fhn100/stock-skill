@@ -19,17 +19,17 @@ category: finance
 | 功能 | 命令 | 说明 |
 |------|------|------|
 | Cookie 获取 | `opencli stock init` | 通过浏览器获取 Cookie 并写入配置文件 |
-| 数据库初始化 | `node init-db.js` | 初始化表结构并同步账户信息（幂等） |
-| 交易记录同步 | `node sync.js [start] [end]` | 同步交易记录，日期格式 `YYYYMMDD`；自动分页、重试 3 次、幂等 |
-| 交易记录匹配 | `node match.js [start] [end]` | 匹配买入/卖出，范围应 ≤ 同步范围 |
-| 收益统计 | `node profit.js [startMonth] [endMonth]` | 查询网格收益，月份格式 `YYYY-MM`；年收益 = 年初至截止月累计。执行时自动清理 0 过户费脏数据：**匹配记录按查询月份范围**清理（tradeMatch 重配即修复）、**交易记录仅当月**清理（sync 重拉修复）；查询范围内其他历史月若仍有 0 过户费交易记录会提示用 sync.js 修复 |
+| 交易记录同步 | `opencli stock sync [start] [end]` | 建表 + 同步账户字典 + 拉取交易记录，日期格式 `YYYYMMDD`（默认当月）；自动分页、幂等 |
+| 仅初始化表结构 | `opencli stock init-db` | 只建表建索引（sync 启动时已自动执行） |
+| 交易记录匹配 | `node match.js` | 匹配本地库中未配对的买入/卖出（纯本地，不联网） |
+| 收益统计 | `node profit.js [startMonth] [endMonth]` | 查询网格收益，月份格式 `YYYY-MM`；年收益 = 年初至截止月累计。执行时自动清理查询范围内 0 过户费的**匹配记录**（重配即修复）；0 过户费的**交易记录**只统计提示，需 `opencli stock sync` 重拉修复（本脚本不再删除交易记录）；纯本地，不联网 |
 | 实时行情 | `node quotes.js [account]` | 持仓实时行情，实时 API 无需同步 |
 | 账户收益 | `node account-profit.js [account] [--json]` | 总资产、持有盈亏、当日盈亏，实时 API |
 | 未匹配查询 | `node unmatched.js [--code] [--name] [--op] [--start] [--end] [--account]` | 查询未配对交易记录 |
 
-**📋 触发词与动作映射**：首次使用/init → 初始化流程；同步、拉取交易 → `sync.js`；匹配、配对 → `match.js`；收益、赚了多少、网格收益 → `profit.js`；行情、持仓、最新价 → `quotes.js`；账户收益、总资产、当日盈亏 → `account-profit.js`；重跑、重新匹配 → `match.js [起止日期]`。
+**📋 触发词与动作映射**：首次使用/init → 初始化流程；同步、拉取交易 → `opencli stock sync`；匹配、配对 → `match.js`；收益、赚了多少、网格收益 → `profit.js`；行情、持仓、最新价 → `quotes.js`；账户收益、总资产、当日盈亏 → `account-profit.js`；重跑、重新匹配 → `node match.js`。
 
-**⚠️ 不提供删除能力**：本技能没有删除交易/匹配记录的工具，也禁止手写 SQL DELETE。数据修正一律通过幂等的 sync/match 重跑覆盖完成。
+**⚠️ 不提供删除能力**：本技能没有删除交易/匹配记录的工具，也禁止手写 SQL DELETE。数据修正一律通过幂等的 `opencli stock sync` / `node match.js` 重跑覆盖完成（`profit.js` 仅重配查询范围内 0 过户费的匹配记录，不删交易记录）。
 
 ## 标准工作流
 
@@ -46,24 +46,21 @@ ls ~/.opencli/plugins/stock/init.js || cp -r ~/.agents/skills/stock-skill/resour
 opencli stock init
 
 # 🔴 STOP · 检查点：Cookie 获取后确认
-# 执行前询问："Cookie 已获取，确认初始化数据库？"
+# 执行前询问："Cookie 已获取，确认初始化数据库并同步当月数据？"
 
-# 3. 初始化数据库
-cd ~/.agents/skills/stock-skill/scripts && node init-db.js
+# 3. 建表 + 同步账户与当月交易记录
+opencli stock sync
 ```
 
 ### 场景：查看收益（最常用）
 
 ```bash
+# 步骤1：同步最新数据（用户说"同步"或"最新"时执行；纯查询收益可跳过）
+opencli stock sync
+
+# 步骤2~3：本地匹配 + 统计（在脚本目录下执行）
 cd ~/.agents/skills/stock-skill/scripts
-
-# 步骤1：同步最新数据（用户说"同步"或"最新"时执行）
-node sync.js
-
-# 步骤2：匹配交易记录（步骤1之后必须执行）
 node match.js
-
-# 步骤3：统计收益（始终执行）；查单只股票/指定月份加参数即可
 node profit.js [YYYY-MM] [YYYY-MM]
 ```
 
@@ -114,27 +111,26 @@ node account-profit.js --json     # JSON 格式（便于程序消费）
 
 ### 场景：重跑某月配对（不删数据）
 
-配对结果不对或想纳入新对手盘时，**不删数据**，直接重跑匹配（sync 幂等，会覆盖同窗口记录）：
+配对结果不对或想纳入新对手盘时，**不删数据**，直接重跑匹配（对全库未配对记录重算，无需日期参数）：
 
 ```bash
 cd ~/.agents/skills/stock-skill/scripts
-node match.js 20260901 20260930
+node match.js
 node profit.js 2026-09
 ```
 
-注意：`sync.js` 采用 INSERT OR REPLACE 幂等写入，同窗口重跑即数据修正的唯一手段。
+注意：`opencli stock sync` 采用 INSERT OR REPLACE 幂等写入，同窗口重跑即交易数据修正的唯一手段。
 
 ### 场景：同步历史数据
 
 ```bash
-cd ~/.agents/skills/stock-skill/scripts
-
 # 🔴 STOP · 检查点：同步前必须确认时间范围
 # 执行前询问："确认同步 XXXX-XX-XX 至 XXXX-XX-XX 的数据？"
 
-node sync.js 20250101 20260627
+opencli stock sync 20250101 20260627
+
 # 🔴 STOP · 检查点：匹配前确认同步完成
-node match.js 20250101 20260627
+cd ~/.agents/skills/stock-skill/scripts && node match.js
 ```
 
 **🔴 STOP · 检查点：** 大范围同步（超过 3 个月）前必须确认用户意图，避免长时间等待。
@@ -173,7 +169,7 @@ FROM t_trade_record WHERE entry_date = current_date ORDER BY entry_time
 | profit | 脚本原始输出为纯文本表格；**回复用户时必须转为 Markdown 表格**：个股明细表（账户/代码/名称/交易次数/收益）+ 汇总表（月收益/年收益），金额千分位格式化 |
 | quotes | 按账户分组，每组末尾附汇总行，按当日盈亏率降序；转为 Markdown 表格 |
 | account-profit | Markdown 表格：账户名称/总资产/持有盈亏/当日盈亏/当日收益率，末尾附汇总行 |
-| sync | 成功：记录数+时间范围；失败：提示更新 Cookie |
+| sync | `opencli stock sync`：成功：记录数+时间范围；失败：提示更新 Cookie |
 | match | 成功：匹配数量；部分未匹配：提示原因 |
 
 ## 数据速查

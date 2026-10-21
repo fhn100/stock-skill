@@ -127,32 +127,7 @@ export function maskAccountName(accountName) {
   return accountName;
 }
 
-// ============================ 参数解析 ============================
-
-/**
- * 从 CLI kwargs 解析日期范围
- * 支持 start/end 参数，缺省时使用当月范围
- * @param {object} kwargs - CLI 参数
- * @param {string} [kwargs.start] - 开始日期 YYYYMMDD
- * @param {string} [kwargs.end] - 结束日期 YYYYMMDD
- * @returns {{ startDate: string, endDate: string }} 日期范围
- */
-export function resolveDateRange(kwargs) {
-  if (kwargs?.start) {
-    const start = kwargs.start;
-    const end = kwargs?.end || lastDayOfMonth(start);
-    return { startDate: start, endDate: end };
-  }
-  return getDefaultDateRange();
-}
-
-/** 计算某月最后一天，格式 YYYYMMDD */
-function lastDayOfMonth(yyyymmdd) {
-  const yyyy = parseInt(yyyymmdd.substring(0, 4), 10);
-  const mm = parseInt(yyyymmdd.substring(4, 6), 10) - 1;
-  const lastDay = new Date(yyyy, mm + 1, 0).getDate();
-  return `${yyyy}${String(mm + 1).padStart(2, "0")}${String(lastDay).padStart(2, "0")}`;
-}
+// ============================ 日期格式化 ============================
 
 /**
  * 日期格式化：YYYYMMDD 或 YYYY-MM-DD → YYYY-MM-DD

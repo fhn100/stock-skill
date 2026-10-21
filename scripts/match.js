@@ -2,28 +2,14 @@
 
 /**
  * 独立匹配脚本 - 不依赖 opencli
- * 用法: node match.js [startDate] [endDate]
- * 日期格式: YYYYMMDD，默认当月
+ * 用法: node match.js
+ * 只对本地库中未匹配的买卖记录做配对；同步新交易记录请先执行 `opencli stock sync`
  */
 
-import { syncTrade, tradeMatch } from "./business.js";
-import { resolveDateRange } from "./utils.js";
-
-// 解析命令行参数
-const args = process.argv.slice(2);
-const kwargs = {
-  start: args[0] || undefined,
-  end: args[1] || undefined,
-};
+import { tradeMatch } from "./business.js";
 
 try {
-  const { startDate, endDate } = resolveDateRange(kwargs);
-  console.log(`同步范围：${startDate} ~ ${endDate}`);
-  
-  // 步骤1：同步交易记录
-  await syncTrade(startDate, endDate);
-  
-  // 步骤2：匹配交易记录（先买后卖，仅盈利）
+  // 匹配交易记录（先买后卖，仅盈利）
   await tradeMatch();
 
   console.log("\n匹配交易记录完成");

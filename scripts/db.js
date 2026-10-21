@@ -87,14 +87,6 @@ const dbManager = new DatabaseManager();
 // ============================ 导出函数 ============================
 
 /**
- * 获取数据库文件路径
- * @returns {string} 数据库文件路径
- */
-export function getDbPath() {
-  return dbManager.getDbPath();
-}
-
-/**
  * 执行数据库操作
  * @param {Function} fn - 接收 (db) 的回调，db 是 DatabaseManager 实例
  * @returns {Promise<*>} fn 的返回值

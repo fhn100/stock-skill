@@ -74,31 +74,25 @@ cd ~/.agents/skills/stock-skill/scripts && npm install
 # 1. 获取 Cookie（需要浏览器）
 opencli stock init
 
-# 2. 初始化数据库
-cd ~/.agents/skills/stock-skill/scripts && node init-db.js
+# 2. 建表 + 同步账户与交易记录（幂等，日期格式 YYYYMMDD）
+opencli stock sync 20250101 20260627
 
-# 3. 同步交易记录
-node sync.js 20250101 20260627
+# 3. 匹配交易记录
+cd ~/.agents/skills/stock-skill/scripts && node match.js
 
-# 4. 匹配交易记录
-node match.js 20250101 20260627
-
-# 5. 查看收益
+# 4. 查看收益
 node profit.js
 ```
 
 ### 日常使用
 
 ```bash
+# 同步当月数据（建表 + 账户字典 + 交易记录）
+opencli stock sync
+
+# 本地匹配 + 查看本月收益
 cd ~/.agents/skills/stock-skill/scripts
-
-# 同步当月数据
-node sync.js
-
-# 匹配交易记录
 node match.js
-
-# 查看本月收益（自动清理 0 过户费脏数据并修复）
 node profit.js
 
 # 查看实时行情
@@ -110,10 +104,10 @@ node quotes.js
 | 命令 | 参数 | 说明 |
 |------|------|------|
 | `opencli stock init` | 无 | 获取 Cookie，自动安装插件 |
-| `node init-db.js` | 无 | 初始化数据库表结构 |
-| `node sync.js` | `[startDate] [endDate]` | 同步交易记录，日期格式 YYYYMMDD |
-| `node match.js` | `[startDate] [endDate]` | 匹配买卖记录 |
-| `node profit.js` | `[startMonth] [endMonth]` | 查询收益，月份格式 `YYYY-MM`；自动清理 0 过户费脏数据：匹配记录按查询月份范围清理重配，交易记录仅当月清理重拉 |
+| `opencli stock init-db` | 无 | 只初始化本地 DuckDB 表结构（sync 已自动执行） |
+| `opencli stock sync` | `[startDate] [endDate]` | 同步账户与交易记录，日期格式 YYYYMMDD，默认当月 |
+| `node match.js` | 无 | 匹配本地库中未配对的买卖记录（纯本地） |
+| `node profit.js` | `[startMonth] [endMonth]` | 查询收益，月份格式 `YYYY-MM`；自动清理 0 过户费脏数据：匹配记录按查询月份范围清理重配，交易记录只统计提示（需 `opencli stock sync` 重拉修复）；纯本地 |
 | `node quotes.js` | `[account]` | 查询实时行情，account 可选 |
 | `node account-profit.js` | `[account] [--json]` | 查询账户收益卡片，--json 输出 JSON |
 | `node unmatched.js` | `[--code] [--name] [--op] [--start] [--end] [--account]` | 查询未匹配交易记录 |
@@ -174,11 +168,11 @@ opencli stock init
 **解决**（sync/match 均为幂等操作，直接重跑即可，**禁止手写 SQL DELETE 修复数据**）：
 ```bash
 # 重拉交易记录（INSERT OR REPLACE，按 history_id 幂等覆盖）
-node sync.js 20250101 $(date +%Y%m%d)
+opencli stock sync 20250101 $(date +%Y%m%d)
 
 # 重跑匹配（只配对未匹配记录；费用字段以交易表最新数据为准）
 # 注：已存在的旧配对不会自动重算；0 过户费的旧配对由 profit.js 查询时自动清理重建
-node match.js 20250101 $(date +%Y%m%d)
+cd ~/.agents/skills/stock-skill/scripts && node match.js
 
 # 重查收益（自动清理查询范围内 0 过户费脏数据）
 node profit.js 2026-01 $(date +%Y-%m)
@@ -213,21 +207,17 @@ stock-skill/
 │   └── anti-patterns.md
 ├── resources/
 │   └── stock/         # opencli 插件
-│       ├── init.js    # Cookie 获取脚本
-│       └── package.json
-└── scripts/           # 核心脚本
-    ├── api-client.js  # 共享 HTTP 客户端
-    ├── business.js    # 业务逻辑（同步/匹配/收益）
+│       ├── init.js    # Cookie 获取 + 本地 DuckDB 表结构初始化
+│       └── sync.js    # 账户与交易记录同步（幂等）
+└── scripts/           # 本地脚本（不再联网同步）
+    ├── api-client.js  # 共享 HTTP 客户端（行情/账户实时接口）
+    ├── business.js    # 业务逻辑（匹配/收益）
     ├── db.js          # 数据库连接
     ├── utils.js       # 工具函数
     ├── constants.js   # 常量定义
-    ├── sql-sync.js    # 同步 SQL
-    ├── sql-schema.js  # 表结构 + 索引
     ├── sql-match.js   # 匹配 SQL
     ├── sql-profit.js  # 收益 SQL
     ├── quotes-api.js  # 行情 API
-    ├── init-db.js     # 数据库初始化
-    ├── sync.js        # 交易同步入口
     ├── match.js       # 交易匹配入口
     ├── profit.js      # 收益查询入口
     ├── quotes.js      # 行情查询入口
@@ -238,13 +228,11 @@ stock-skill/
 ### 运行测试
 
 ```bash
-cd ~/.agents/skills/stock-skill/scripts
-
 # 测试同步
-node sync.js 20260901 20260930
+opencli stock sync 20260901 20260930
 
 # 测试匹配
-node match.js 20260901 20260930
+cd ~/.agents/skills/stock-skill/scripts && node match.js
 
 # 测试收益查询
 node profit.js 2026-09

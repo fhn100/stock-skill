@@ -11,10 +11,6 @@ export const TABLE = {
   TRADE_MATCHED: "t_trade_matched_record",
 };
 
-// ============================ 分页 ============================
-
-export const PAGE_SIZE = 1000;
-
 // ============================ API ============================
 
 export const API_BASE = "https://tzzb.10jqka.com.cn/caishen_httpserver/tzzb";
@@ -23,7 +19,6 @@ export const API_PATH = {
   ACCOUNT_LIST: "/caishen_fund/pc/account/v1/account_list",
   PASS_QUOTES: "/caishen_fund/invest/v1/pass_quotes",
   STOCK_POSITION: "/caishen_fund/pc/asset/v1/stock_position",
-  SYNC_TRADE: "/caishen_fund/pc/account/v2/get_money_history",
   STOCK_CARD: "/caishen_fund/pc/account/v1/stock_card",
 };
 
@@ -47,21 +42,9 @@ export const API_DEFAULTS = {
 
 export const OP = { BUY: "1", SELL: "2" };
 
-// ============================ 字典类型 ============================
-
-export const DICT_TYPE = { FUND_KEY: "fund_key" };
-
 // ============================ Cookie 校验 ============================
 
 export const COOKIE_REQUIRED_FIELDS = ["userid", "ticket", "sess_tk", "v"];
-
-// ============================ 同步与匹配 ============================
-
-/**
- * 同步并发数
- * 同花顺 tzzb 前置 Nginx 对单 IP 有限流，并发拉取极易触发 403，故串行。
- */
-export const SYNC_CONCURRENCY = 1;
 
 // ============================ 网络请求 ============================
 
