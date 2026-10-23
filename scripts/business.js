@@ -5,6 +5,7 @@
 
 import { withDb } from "./db.js";
 import { TABLE, OP, INSERT_BATCH_SIZE } from "./constants.js";
+import { pad2 } from "./utils.js";
 import { GRID_PROFIT } from "./sql-profit.js";
 import { LOAD_UNMATCHED_TRADES, MATCHED_COLUMNS } from "./sql-match.js";
 
@@ -59,11 +60,12 @@ const byTime = (a, b) =>
  * @returns {number}
  */
 export function netMoneyOf(t) {
-  const fee = Number(t.entry_money) === Number(t.transfer_fee)
-    ? 0
-    : Number(t.transfer_fee);
-  const total = Number(t.entry_money) + fee + Number(t.commission);
-  return t.op === OP.BUY ? total : 2 * Number(t.entry_money) - total;
+  const money = Number(t.entry_money);
+  // 过户费等于成交额视为接口脏数据（港股及部分账户快照），按 0 费用处理
+  const fee = money === Number(t.transfer_fee) ? 0 : Number(t.transfer_fee);
+  const commission = Number(t.commission);
+  // 买入 = 实付净成本（加费）；卖出 = 实收净所得（扣同一费用）
+  return t.op === OP.BUY ? money + fee + commission : money - fee - commission;
 }
 
 /**
@@ -158,9 +160,12 @@ function summarizeUnmatched(unBuys, unSells, allBuys, allSells) {
  * @param {boolean} [opts.netFilter=true] - 盈利判定用净额还是毛额
  *   true：买入净成本 < 卖出净所得（真实盈利，与 profit 一致）
  *   false：买入毛额 < 卖出毛额（覆盖更多对，但部分对 net profit 可能为负）
+ * @returns {Promise<{matched:number, unmatchedBuy:number, unmatchedSell:number,
+ *   summary:{sellNoBuy:number, sellNoProfit:number, buyNoSell:number, buyNoProfit:number}}>}
+ *   匹配结果统计（渲染交由调用方，业务层不直接打印）
  */
 export async function tradeMatch({ netFilter = true } = {}) {
-  await withDb(async (db) => {
+  return await withDb(async (db) => {
     const trades = (await db.all(LOAD_UNMATCHED_TRADES)).map((t) => ({
       ...t,
       // DuckDBTimestampValue {micros} → JS Date（epoch 毫秒）
@@ -176,7 +181,7 @@ export async function tradeMatch({ netFilter = true } = {}) {
     const insertRows = pairs.map(({ buy, sell }) => [
       buy.account_id, buy.account_name,
       String(sell.entry_ts.getFullYear()),
-      `${sell.entry_ts.getFullYear()}-${String(sell.entry_ts.getMonth() + 1).padStart(2, "0")}`,
+      `${sell.entry_ts.getFullYear()}-${pad2(sell.entry_ts.getMonth() + 1)}`,
       buy.code, buy.name || sell.name,
       sell.entry_price, buy.entry_price,
       sell.entry_count, buy.entry_count,
@@ -192,14 +197,14 @@ export async function tradeMatch({ netFilter = true } = {}) {
     const usedBuy = new Set(pairs.map((p) => p.buy.history_id));
     const unBuys = buys.filter((b) => !usedBuy.has(b.history_id));
     const unSells = sells.filter((s) => !usedSell.has(s.history_id));
-
-    console.log(`匹配完成：新增 ${pairs.length} 对`);
-    console.log(`未匹配买入：${unBuys.length}，未匹配卖出：${unSells.length}`);
     const summary = summarizeUnmatched(unBuys, unSells, buys, sells);
-    if (summary.sellNoBuy > 0) console.log(`  卖出无同数量买入可配：${summary.sellNoBuy}（可能需数量拆分）`);
-    if (summary.sellNoProfit > 0) console.log(`  卖出无盈利买入可配：${summary.sellNoProfit}`);
-    if (summary.buyNoSell > 0) console.log(`  买入无同数量卖出可配：${summary.buyNoSell}`);
-    if (summary.buyNoProfit > 0) console.log(`  买入无盈利卖出可配：${summary.buyNoProfit}`);
+
+    return {
+      matched: pairs.length,
+      unmatchedBuy: unBuys.length,
+      unmatchedSell: unSells.length,
+      summary,
+    };
   });
 }
 
@@ -207,8 +212,7 @@ export async function tradeMatch({ netFilter = true } = {}) {
 
 /** 格式化 Date → 'YYYY-MM-DD HH:MM:SS'（DuckDB TIMESTAMP 绑定用） */
 function fmtDateTime(d) {
-  const p = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
 }
 
 /**
@@ -218,6 +222,11 @@ function fmtDateTime(d) {
  * @returns {Promise<Array>} 结果行
  */
 export async function gridProfit(startMonth, endMonth) {
+  // GRID_PROFIT 里的 ? 按 SQL 文本顺序位置绑定，改动 SQL 占位符时务必同步这里：
+  //   1. year CTE   `strftime(sell_time,'%Y-%m') <= ?`        → endMonth
+  //   2. 外层 WHERE `t.sell_date >= ?`                         → startMonth
+  //   3. 外层 WHERE `t.sell_date <= ?`                         → endMonth
+  //   4. 外层 WHERE `substr(?,1,4)`（year 行按年匹配）          → startMonth 的年份
   return await withDb(async (db) =>
     await db.all(GRID_PROFIT, [endMonth, startMonth, endMonth, startMonth.substring(0, 4)]),
   );

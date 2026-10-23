@@ -14,6 +14,14 @@ export function getDataDir() {
   return dir;
 }
 
+// ============================ 数值 / 补零 ============================
+
+/** 两位零填充：5 → "05" */
+export const pad2 = (n) => String(n).padStart(2, "0");
+
+/** 保留 4 位小数（金额用），避免浮点尾差 */
+export const round4 = (n) => Math.round((Number(n) + Number.EPSILON) * 1e4) / 1e4;
+
 // ============================ 日期工具 ============================
 
 /**
@@ -23,7 +31,7 @@ export function getDataDir() {
 export function getCurrentMonth() {
   const now = new Date();
   const yyyy = now.getFullYear();
-  const mm = String(now.getMonth() + 1).padStart(2, "0");
+  const mm = pad2(now.getMonth() + 1);
   return `${yyyy}-${mm}`;
 }
 
@@ -33,7 +41,7 @@ export function getCurrentMonth() {
  */
 export function getDefaultDateRange() {
   const now = new Date();
-  const ym = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}`;
+  const ym = `${now.getFullYear()}${pad2(now.getMonth() + 1)}`;
   return { startDate: `${ym}01`, endDate: `${ym}${lastDayOfMonth(ym)}` };
 }
 
@@ -46,7 +54,7 @@ export function lastDayOfMonth(ym) {
   const s = String(ym).replace("-", "");
   const mm = Number(s.slice(4, 6));
   if (mm < 1 || mm > 12) throw new Error(`月份非法: ${ym}`);
-  return String(new Date(Number(s.slice(0, 4)), mm, 0).getDate()).padStart(2, "0");
+  return pad2(new Date(Number(s.slice(0, 4)), mm, 0).getDate());
 }
 
 /**
@@ -60,7 +68,7 @@ export function monthRange(start, end) {
   let [y, m] = start.split("-").map(Number);
   const [ey, em] = end.split("-").map(Number);
   for (let i = 0; i < 1200 && (y < ey || (y === ey && m <= em)); i++) {
-    months.push(`${y}-${String(m).padStart(2, "0")}`);
+    months.push(`${y}-${pad2(m)}`);
     if (++m > 12) { m = 1; y += 1; }
   }
   return months;
@@ -135,4 +143,25 @@ export function renderTable(headers, rows) {
       .join("  ");
 
   return [rule, line(headers), rule, ...rows.map(line), rule].join("\n");
+}
+
+// ============================ 匹配结果渲染 ============================
+
+/**
+ * 将 tradeMatch 返回的统计对象渲染为纯文本行（业务层不打印，展示集中在此）
+ * @param {{matched:number, unmatchedBuy:number, unmatchedSell:number,
+ *   summary:{sellNoBuy:number, sellNoProfit:number, buyNoSell:number, buyNoProfit:number}}} s
+ * @returns {string}
+ */
+export function renderMatchStats(s) {
+  const m = s.summary || {};
+  const lines = [
+    `匹配完成：新增 ${s.matched} 对`,
+    `未匹配买入：${s.unmatchedBuy}，未匹配卖出：${s.unmatchedSell}`,
+  ];
+  if (m.sellNoBuy > 0) lines.push(`  卖出无同数量买入可配：${m.sellNoBuy}（可能需数量拆分）`);
+  if (m.sellNoProfit > 0) lines.push(`  卖出无盈利买入可配：${m.sellNoProfit}`);
+  if (m.buyNoSell > 0) lines.push(`  买入无同数量卖出可配：${m.buyNoSell}`);
+  if (m.buyNoProfit > 0) lines.push(`  买入无盈利卖出可配：${m.buyNoProfit}`);
+  return lines.join("\n");
 }

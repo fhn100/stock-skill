@@ -10,9 +10,10 @@
  *   --end <YYYYMMDD>     结束日期
  *   --account <账户名>   按账户名称过滤
  *   --all                包含不参与配对的流水（逆回购/派息/缴税/转入转出等）
+ *   --db <path>          覆盖数据库路径（= STOCK_DB_OVERRIDE，仅测试用）
  */
 
-import { withDb } from "./db.js";
+import { withDb, extractDbFlag } from "./db.js";
 import { TABLE, OP, opLabel } from "./constants.js";
 import { NOT_MATCHED_JOIN, MATCHABLE_COND } from "./sql-match.js";
 import { maskAccountName, fmtDate, getDefaultDateRange, renderTable } from "./utils.js";
@@ -20,7 +21,7 @@ import { maskAccountName, fmtDate, getDefaultDateRange, renderTable } from "./ut
 // ============================ 参数解析 ============================
 
 function parseArgs() {
-  const args = process.argv.slice(2);
+  const args = extractDbFlag(process.argv.slice(2));
   const opts = { code: null, name: null, op: null, start: null, end: null, account: null, all: false };
 
   const take = (flag) => {
@@ -62,6 +63,7 @@ function printUsage() {
   --end <YYYYMMDD|YYYY-MM-DD>     结束日期（默认当天）
   --account <账户名>   按账户名称过滤（模糊匹配）
   --all                包含不参与配对的流水（逆回购/派息/缴税/转入转出等）
+  --db <path>          覆盖数据库路径（等价于 STOCK_DB_OVERRIDE，仅测试用）
   -h, --help           显示帮助
 
 默认只列出可配对记录（op=1/2 且数量>0，即现货买卖），与 match.js 的配对口径一致。

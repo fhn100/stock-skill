@@ -3,7 +3,7 @@
  * 包含网格收益查询的 SQL
  */
 
-import { TABLE } from "./constants.js";
+import { TABLE, MARKET } from "./constants.js";
 
 /**
  * 网格收益查询
@@ -16,7 +16,13 @@ import { TABLE } from "./constants.js";
  * 最终合并排序，输出脱敏的账户名。
  */
 export const GRID_PROFIT = `
-WITH stock AS (
+WITH cur AS (
+  SELECT account_id,
+    CASE WHEN BOOL_OR(market_code = '${MARKET.US}') THEN 'USD' ELSE 'CNY' END AS currency
+  FROM ${TABLE.TRADE_RECORD}
+  GROUP BY account_id
+),
+stock AS (
   SELECT
     account_id,
     account_name,
@@ -63,6 +69,7 @@ SELECT
   substr(account_name, 1, strpos(account_name, '-'))
     || substr(account_name, strpos(account_name, '-') + 1, 1) || '*'
     AS "账户",
+  cur.currency AS "币种",
   t.sell_date AS "时间",
   t.code AS "股票代码",
   t.name AS "股票名称",
@@ -76,6 +83,7 @@ FROM (
   UNION ALL
   SELECT * FROM year
 ) t
+LEFT JOIN cur ON cur.account_id = t.account_id
 WHERE (t.sell_date >= ? AND t.sell_date <= ?)
    OR (t.row_type = 'year' AND substr(t.sell_date, 1, 4) = substr(?, 1, 4))
 ORDER BY
