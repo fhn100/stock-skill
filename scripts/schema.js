@@ -1,7 +1,7 @@
 /**
  * 表结构单一来源（scripts 树）
  *
- * import-csv.js 等本地脚本建表统一从这里取，避免各处内联 DDL 漂移。
+ * scripts 树内各脚本建表统一从这里取，避免各处内联 DDL 漂移。
  * 注意：opencli 插件 resources/stock/sync.js 是独立安装、自带 node_modules 的插件，
  * 不宜跨树 import 本模块（会把插件耦合到技能绝对路径、破坏其自包含 cp -r 安装），
  * 故插件保留自身一份 DDL，由 selftest.js 的「列名与 sync.js 一致」parity 测试守卫两侧同步。

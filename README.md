@@ -4,8 +4,8 @@
 
 ## 功能
 
-- 🔄 **数据同步**：`opencli stock sync` 复用浏览器登录态，自动分页同步同花顺账户与交易记录（本地不落任何凭证，幂等）
-- 📥 **CSV 导入**：`node import-csv.js` 导入嘉信(Schwab)美股交易 CSV，默认按 1 股拆分、支持整表重导
+- 🔄 **数据同步**：`opencli stock sync` 复用浏览器登录态，自动分页同步同花顺账户与交易记录（接口在浏览器上下文内发起，token/Cookie 不落盘，幂等）
+- 🇺🇸 **嘉信接口同步**：`opencli stock sync-schwab`（先 `opencli stock login`）直连 `ausgateway.schwab.com` 交易接口拉美股成交，**美股数据的唯一写入路径**；默认按 1 股拆分、`history_id` 幂等，重跑覆盖不重复
 - 🔗 **交易匹配**：自动匹配买卖记录（最短持有优先，仅盈利配对）
 - 💰 **收益统计**：查询网格收益（含币种列，美股/A 股分列不可跨币种加总）
 - 🔍 **未匹配排查**：查询未配对的买卖记录
@@ -94,26 +94,29 @@ node profit.js
 node unmatched.js
 ```
 
-### 导入嘉信美股 CSV
+### 同步嘉信美股（接口）
 
 ```bash
-cd ~/.agents/skills/stock-skill/scripts
-node import-csv.js "<file.csv>" --dry-run   # 先预览解析结果
-node import-csv.js "<file.csv>"             # 默认账户 嘉信-冯、按 1 股拆分导入
-node profit.js                              # 配对 + 收益（美股与 A 股同一套）
+opencli stock login                                     # 登录嘉信（凭据/TOTP 读 ~/.duckdb/stock/stock.config）
+opencli stock sync-schwab 20261001 20261031 --dry-run   # 先只解析不写库，确认条数
+opencli stock sync-schwab                               # 全量同步（无日期=不限区间）
+cd ~/.agents/skills/stock-skill/scripts && node profit.js
 ```
+
+`history_id` 由「账户|时间|代码|方向|数量|价格」SHA1 生成（前缀 `CSV|` 是历史命名，导出 CSV 的入库脚本已移除），同主键 INSERT OR REPLACE 覆盖，重跑与历史数据互不重复。
 
 ## 命令参考
 
 | 命令 | 参数 | 说明 |
 |------|------|------|
 | `opencli stock init-db` | 无 | 只初始化本地 DuckDB 表结构（sync 已自动执行） |
-| `opencli stock sync` | `[startDate] [endDate]` | 复用浏览器登录态同步账户与交易记录，日期格式 YYYYMMDD，默认当月；需先登录同花顺投资决策页 |
-| `node import-csv.js` | `<file.csv> [--account] [--no-split] [--replace] [--dry-run] [--db] [--verbose]` | 导入嘉信(Schwab)美股 CSV 到 `t_trade_record`（纯本地）；**默认按 1 股拆分**（`--no-split` 关闭）；`--replace` 清除本账户旧交易+配对后整表重导；表头自动识别，`market_code='US'` |
+| `opencli stock login` | `[--user] [--pass] [--secret] [--config] [--wait-manual]` | 自动登录嘉信理财 `client.schwab.com`（用户名+密码+TOTP 两步），凭据读 `~/.duckdb/stock/stock.config`；会话持久化供 `sync-schwab` 复用 |
+| `opencli stock sync` | `[startDate] [endDate] [--dry-run]` | 同花顺（A 股/港股）账户与交易记录同步，日期格式 YYYYMMDD，默认当月；需先登录同花顺投资决策页。美股不在这里，走 `opencli stock sync-schwab` |
+| `opencli stock sync-schwab` | `[startDate] [endDate] [--account] [--account-id] [--dry-run] [--timeout]` | **美股数据唯一写入路径**。嘉信(Schwab)接口同步：从浏览器会话取 Bearer token 后同源调用 `ausgateway` 交易接口，自动分页（末页不再返回游标即停止）。不给日期=全量；`history_id` 幂等，重跑覆盖不重复；接口无成交时间，统一记 `16:00:00`；需先 `opencli stock login` |
 | `node match.js` | `[--db <path>]` | 匹配本地库中未配对的买卖记录（纯本地，`profit.js` 已内置此步，无需单独跑） |
 | `node profit.js` | `[startMonth] [endMonth] [--db <path>]` | 查询收益，月份格式 `YYYY-MM`；一个事务内先清理查询范围内 0 过户费的匹配记录，再全库重算配对（崩溃整体回滚）；输出含**币种列**（US→USD，其余 CNY，跨币种不可加总）；交易记录 0 过户费只统计提示（需 `opencli stock sync` 重拉修复）；纯本地 |
 | `node unmatched.js` | `[--code] [--name] [--op] [--start] [--end] [--account] [--all] [--db <path>]` | 查询未配对记录，默认与配对口径一致（op=1/2 且数量>0）；`--all` 含逆回购/派息等非买卖流水 |
-| `node --test selftest.js` | 无 | 纯函数自测：匹配算法、净额口径、CSV 导入、日期与表格工具、schema 漂移守卫（不碰数据库） |
+| `node --test selftest.js` | 无 | 纯函数自测：匹配算法、净额口径、嘉信同步纯函数与 `history_id` 主键守卫、日期与表格工具、schema 漂移守卫（不碰数据库；需插件依赖已装，缺失时嘉信用例自动跳过） |
 | `node --test inttest.js` | 无 | 钱路集成测试：临时 DuckDB 库上跑通 `tradeMatch` 落库 + `gridProfit` 三层聚合，校验收益金额、币种派生与 SQL 位置参数绑定 |
 
 > `--db <path>` 是所有本地脚本 `STOCK_DB_OVERRIDE` 环境变量的命令行糖：二者都指向同一覆盖路径，用于隔离测试不写正式库。
@@ -137,21 +140,21 @@ node profit.js                              # 配对 + 收益（美股与 A 股�
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| history_id | VARCHAR | 主键；sync 由「账户+时间戳+代码+方向+数量」生成，CSV 导入由「账户\|时间\|代码\|方向\|数量\|价格」SHA1 生成 |
+| history_id | VARCHAR | 主键；同花顺 sync 由「账户+时间戳+代码+方向+数量」生成，美股 `sync-schwab` 由「账户\|时间\|代码\|方向\|数量\|价格」SHA1 前 24 位生成（`CSV|` 为历史命名） |
 | account_id | VARCHAR | 账户 ID |
 | account_name | VARCHAR | 账户名称 |
-| account_type | VARCHAR | 账户类型（CSV 导入固定 `US`） |
+| account_type | VARCHAR | 账户类型（美股 `sync-schwab` 固定 `US`） |
 | code | VARCHAR | 股票代码 |
 | name | VARCHAR | 股票名称 |
 | market_code | VARCHAR | 市场（`US`=美股，其余 A 股/港股）；用于币种判定与「0 过户费」清理排除美股 |
-| op | VARCHAR | 操作类型（'1'买入，'2'卖出；'5'/'35' 逆回购、'6' 派息、'95' 缴税、CSV 非交易流水 '99' 等不参与配对） |
+| op | VARCHAR | 操作类型（'1'买入，'2'卖出；'5'/'35' 逆回购、'6' 派息、'95' 缴税、嘉信非买卖流水 '99' 等不参与配对） |
 | op_name | VARCHAR | 操作名称（仅参考，不可靠，判断方向一律用 `op`） |
 | entry_price | DECIMAL(10,4) | 成交价格 |
-| entry_count | INTEGER | 成交数量（CSV 默认拆分为 1） |
+| entry_count | INTEGER | 成交数量（美股按 1 股拆分入库） |
 | entry_money | DECIMAL(10,4) | 成交金额（买卖均为含费净额） |
 | entry_cost | DECIMAL(10,4) | 成本 |
 | fee_total | DECIMAL(10,4) | 费用合计 |
-| commission | DECIMAL(10,4) | 佣金（CSV 导入恒 0，防与 entry_money 重复扣费） |
+| commission | DECIMAL(10,4) | 佣金（美股取接口 `feesAndCommission`；`entry_money` 已含费，此处再计会被 `netMoneyOf` 重复扣 0.01~0.02/笔，口径待定） |
 | transfer_fee | DECIMAL(10,4) | 过户费（美股恒 0） |
 | entry_date | VARCHAR | 成交日期 |
 | entry_time | VARCHAR | 成交时间 |
@@ -200,8 +203,8 @@ opencli stock sync 20250101 $(date +%Y%m%d)
 cd ~/.agents/skills/stock-skill/scripts
 node profit.js 2026-01 $(date +%Y-%m)
 
-# CSV 账户要换拆分口径 / 整表重导，用 --replace（仅此账户，免手删）
-node import-csv.js "<file.csv>" --replace --no-split
+# 美股数据只能靠幂等重跑修正：同账户名重跑 sync-schwab 会按 history_id 覆盖
+opencli stock sync-schwab
 ```
 
 ### 同步失败
@@ -243,8 +246,7 @@ stock-skill/
     ├── inttest.js     # 钱路集成测试（临时 DuckDB 库，校验 tradeMatch+gridProfit）
     ├── match.js       # 交易匹配入口
     ├── profit.js      # 收益查询入口
-    ├── unmatched.js   # 未匹配记录查询
-    └── import-csv.js  # 嘉信美股 CSV 导入入口
+    └── unmatched.js   # 未匹配记录查询（美股写入在插件 resources/stock/sync.js，本地无导入脚本）
 ```
 
 ### 运行测试
@@ -265,8 +267,10 @@ node profit.js 2026-09
 # 测试未匹配查询
 node unmatched.js --start 20260901 --end 20260930
 
-# 测试 CSV 导入（隔离到临时库，不写正式库）
-node import-csv.js "<file.csv>" --dry-run
+# 测试美股同步（先 dry-run 只解析不写库）
+opencli stock sync-schwab --dry-run
+
+# 测试收益查询（隔离到临时库，不写正式库）
 node profit.js 2026-10 --db /tmp/test_stock.db
 ```
 

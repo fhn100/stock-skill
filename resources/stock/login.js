@@ -1,42 +1,65 @@
 /**
- * opencli schwab login —— 自动登录嘉信理财（client.schwab.com）
+ * opencli stock login —— 自动登录嘉信理财（client.schwab.com）
  *
  * 登录分两步：
  *   第 1 步 用户名+密码：从 ~/.duckdb/stock/stock.config 读取 SCHWAB_USERNAME /
  *            SCHWAB_PASSWORD 自动填写（也可 --user/--pass 覆盖，或 --wait-manual
  *            等待人工在浏览器窗口点选保存的密码后自动继续）。
- *   第 2 步 OTP 验证码：从同一配置文件读取 SCHWAB_SCRET（base32）生成 TOTP
- *            自动填入（纯本地 HMAC-SHA1 计算，不依赖外部服务）。
+ *   第 2 步 OTP 验证码：从同一配置文件读取 SCHWAB_SECRET（base32；历史拼写错误键
+ *            SCHWAB_SCRET 仍兼容）生成 TOTP 自动填入（纯本地 HMAC-SHA1 计算，
+ *            不依赖外部服务）。
  *
  * 配置文件格式（一行一个）：
  *   SCHWAB_USERNAME=fhn100
  *   SCHWAB_PASSWORD=******
- *   SCHWAB_SCRET=ATZGYEQ7...（base32 TOTP 密钥）
+ *   SCHWAB_SECRET=ATZGYEQ7...（base32 TOTP 密钥）
  *
  * 说明：Chromium 在 debugger/CDP 附加的自动化标签页中会抑制跨域 iframe 的密码
  * 自动填充下拉（安全行为）。本插件默认直接用配置文件中的凭据，不依赖浏览器 autofill。
+ *
+ * 结构：常量 → ctx 化浏览器原语（type/click/eval 同时作用于主文档与跨域 iframe）
+ *       → 验证码定位/提交 → 流程步骤（waitForLoginFrame / fillFirstStep /
+ *       runPostLoginPoll）→ cli() 注册。
  */
 import { cli, Strategy } from "@jackwener/opencli/registry";
 import { AuthRequiredError, CommandExecutionError } from "@jackwener/opencli/errors";
 import { log } from "@jackwener/opencli/logger";
 import { createHmac } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
 // ============================ 常量 ============================
 
-const SITE = "schwab";
+const SITE = "stock";
 const LOGIN_URL = "https://client.schwab.com/Areas/Access/Login?lang=zh-cn";
 const GATEWAY_HOST = "sws-gateway-nr.schwab.com";
+// 登录 widget iframe 的 id / name（两处匹配共用同一常量）
+const FRAME_NAME = "lmsIframe";
 // 统一配置文件（用户名 / 密码 / TOTP 密钥）
 const DEFAULT_CONFIG_FILE = join(homedir(), ".duckdb", "stock", "stock.config");
 const CFG_KEY_USER = "SCHWAB_USERNAME";
 const CFG_KEY_PASS = "SCHWAB_PASSWORD";
-const CFG_KEY_SECRET = "SCHWAB_SCRET";
+const CFG_KEY_SECRET = "SCHWAB_SECRET";
+// 历史拼写错误键（缺 S），配置文件仍兼容
+const CFG_KEY_SECRET_LEGACY = "SCHWAB_SCRET";
 const OTP_LEN = 6;
 const OTP_PERIOD = 30;
-const DEFAULT_MANUAL_WAIT = 90; // 秒，等待用户手动填充凭据
+
+// 登录 widget 元素选择器
+const LOGIN_USER_SEL = "#loginIdInput";
+const LOGIN_PASS_SEL = "#passwordInput";
+const LOGIN_SUBMIT_SEL = "#btnLogin";
+
+// 时间常量（毫秒；page.sleep 处换算为秒）
+const LOGIN_FRAME_WAIT_MS = 30_000;      // 等待 iframe + 用户名输入框就绪总窗口
+const FRAME_PROBE_FAST_MS = 2_000;       // 外层轮询内每轮的输入框探测窗口
+const FRAME_PROBE_FINAL_MS = 3_000;      // 外层窗口耗尽后的最后一次确认
+const POST_LOGIN_WAIT_MS = 150_000;      // 点击登入后状态机轮询总窗口（实测嘉信慢跳转可达 90s）
+const OTP_SERVER_WAIT_MS = 10_000;       // 单次 OTP 提交后等待服务器响应窗口
+const OTP_SERVER_POLL_MS = 400;
+const CHALLENGE_DIAGNOSTIC_MS = 15_000;  // 停在验证页这么久仍无输入框 → 打印一次实况诊断
+const FULL_SCAN_EVERY = 4;               // OTP 页检测每 N 轮做一次全 frame 扫描（慢路径）
 
 // 密码填错/账号被锁不会自我恢复，重试只会延长锁定 —— 命中即终止。
 const FATAL_ERROR_RE =
@@ -44,6 +67,15 @@ const FATAL_ERROR_RE =
 
 // 登录成功 = 主文档离开该登录页
 const isLoginPage = (url) => /\/Areas\/Access\/Login/.test(String(url || ""));
+
+/** 最终登录成功 = 已到达客户主站（client.schwab.com / www.schwab.com 非登录路径） */
+function isFinalLoggedInUrl(url) {
+  const u = String(url || "");
+  if (isLoginPage(u)) return false;
+  // 仍在中转域（sws-gateway）或中转路由 → 未完成
+  if (/sws-gateway/i.test(u)) return false;
+  return /client\.schwab\.com|www\.schwab\.com/i.test(u);
+}
 
 // ============================ TOTP（纯 Node 实现） ============================
 
@@ -62,9 +94,13 @@ function base32Decode(secret) {
   return Buffer.from(bytes);
 }
 
-function totp(secret, { period = OTP_PERIOD, digits = OTP_LEN, periodsAhead = 0 } = {}) {
+/**
+ * TOTP（RFC 6238）：HMAC-SHA1，默认 30s 窗口 / 6 位。
+ * timestamp/periodsAhead 可注入，便于按标准向量自测。
+ */
+function totp(secret, { period = OTP_PERIOD, digits = OTP_LEN, periodsAhead = 0, timestamp = Date.now() } = {}) {
   const key = base32Decode(secret);
-  const counter = Math.floor(Date.now() / 1000 / period) + (periodsAhead || 0);
+  const counter = Math.floor(timestamp / 1000 / period) + (periodsAhead || 0);
   const msg = Buffer.alloc(8);
   msg.writeBigUInt64BE(BigInt(counter));
   const h = createHmac("sha1", key).update(msg).digest();
@@ -72,6 +108,8 @@ function totp(secret, { period = OTP_PERIOD, digits = OTP_LEN, periodsAhead = 0 
   const bin = ((h[off] & 0x7f) << 24) | (h[off + 1] << 16) | (h[off + 2] << 8) | h[off + 3];
   return String(bin % 10 ** digits).padStart(digits, "0");
 }
+
+// ============================ 配置文件解析 ============================
 
 /** 解析 key=value 行格式配置文件，返回键值 map */
 function readKeyValueConfig(file) {
@@ -91,21 +129,44 @@ function readKeyValueConfig(file) {
   return map;
 }
 
-/** 从统一配置文件读指定键；缺失时给出清晰报错 */
-function readConfigValue(configMap, key, file) {
-  const v = configMap[key];
-  if (!v) {
-    throw new CommandExecutionError(
-      `配置文件中未找到键 ${JSON.stringify(key)}（文件: ${file}）`,
-      `现有键: ${Object.keys(configMap).join(", ") || "（空）"}；请补齐 ${key}=<value>`,
-    );
+/**
+ * 从配置 map 读取键值；keys 为键名数组时靠前者优先（用于新旧键兼容）。
+ * 全部缺失时给出清晰报错。
+ */
+function readConfigValue(configMap, keys, file) {
+  const list = Array.isArray(keys) ? keys : [keys];
+  for (const key of list) {
+    const v = configMap[key];
+    if (v) return v;
   }
-  return v;
+  throw new CommandExecutionError(
+    `配置文件中未找到键 ${list.join(" / ")}（文件: ${file}）`,
+    `现有键: ${Object.keys(configMap).join(", ") || "（空）"}；请补齐 ${list[0]}=<value>`,
+  );
 }
 
-// ============================ 原生输入 / iframe 工具 ============================
+/** 配置文件存明文凭据：属组/其他用户可读时告警 */
+function warnIfConfigPermsLoose(file) {
+  try {
+    const mode = statSync(file).mode & 0o777;
+    if (mode & 0o077) log.warn(`配置文件 ${file} 权限过宽（${mode.toString(8)}），建议 chmod 600`);
+  } catch { /* 文件不存在时由 readKeyValueConfig 报清晰错误 */ }
+}
 
-const KEY_VK = { Enter: 13, ArrowDown: 40, ArrowUp: 38, Tab: 9, Escape: 27, Backspace: 8, " ": 32 };
+// ============================ 执行上下文与浏览器原语 ============================
+
+// 同一套输入/点击/取文本操作需同时作用于主文档与跨域 iframe，用 ctx 统一：
+//   { kind: 'page',  index: -1 }          —— 主文档
+//   { kind: 'frame', index: <frameIdx> }  —— 跨域 iframe
+const frameCtx = (index) => ({ kind: "frame", index });
+
+/** 在 ctx 对应上下文（page 或 frame）执行 evaluate 代码 */
+async function evalIn(page, ctx, code) {
+  if (ctx.kind === "frame") return page.evaluateInFrame(code, ctx.index);
+  return page.evaluate(code);
+}
+
+const KEY_VK = { Enter: 13, ArrowDown: 40 };
 
 /** 浏览器级原生鼠标点击（坐标来自元素几何，可作用于跨域 iframe 内元素） */
 async function nativeClickAt(page, x, y) {
@@ -137,7 +198,7 @@ function gatewayFrameIndex(frames) {
   for (let i = 0; i < frames.length; i += 1) {
     const url = String(frames[i]?.url || "");
     const name = String(frames[i]?.name || "");
-    if (url.includes(GATEWAY_HOST) || name === "lmsIframe") return i;
+    if (url.includes(GATEWAY_HOST) || name === FRAME_NAME) return i;
   }
   return -1;
 }
@@ -156,7 +217,8 @@ async function waitFrameSelector(page, index, selector, timeoutMs = 15000) {
   }
 }
 
-function waitForCondition(timeoutMs) {
+/** 生成轮询探测器：probe() 返回真值即成功，超时返回 false */
+function waitForCondition(page, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   return async (probe) => {
     for (;;) {
@@ -164,7 +226,7 @@ function waitForCondition(timeoutMs) {
       try { ok = Boolean(await probe()); } catch { /* retry */ }
       if (ok) return true;
       if (Date.now() > deadline) return false;
-      await new Promise((r) => setTimeout(r, 800));
+      await page.sleep(0.8);
     }
   };
 }
@@ -184,7 +246,7 @@ async function elementViewportCenter(page, index, selector) {
   if (!inner?.found) return null;
   const framePos = await page.evaluate(
     `(() => {
-      const f = document.getElementById('lmsIframe');
+      const f = document.getElementById(${JSON.stringify(FRAME_NAME)});
       if (!f) return null;
       const r = f.getBoundingClientRect();
       return { x: r.x, y: r.y };
@@ -194,77 +256,91 @@ async function elementViewportCenter(page, index, selector) {
   return { x: framePos.x + inner.x, y: framePos.y + inner.y };
 }
 
-/** 点击 iframe 内元素：优先原生坐标点击，失败回退 JS click */
-async function clickInFrame(page, index, selector) {
-  const pos = await elementViewportCenter(page, index, selector);
-  if (pos) {
-    try {
-      await nativeClickAt(page, pos.x, pos.y);
-      return;
-    } catch { /* fall through to JS click */ }
-  }
-  await page.evaluateInFrame(
-    `(() => {
-      const el = document.querySelector(${JSON.stringify(selector)});
-      if (!el) throw new Error('元素不存在: ' + ${JSON.stringify(selector)});
-      el.click();
-      return true;
-    })()`,
-    index,
-  );
-}
-
 /**
- * 向 iframe 内输入框输入文本（优先 CDP 原生 insertText；
- * 回退 Angular 兼容的 value setter + input 事件）。
+ * 向 ctx 内输入框输入文本（优先 CDP 原生 insertText；
+ * 回退 Angular 兼容的 value setter + input 事件），并回读校验。
  */
-async function typeIntoFrame(page, index, selector, text) {
-  await page.evaluateInFrame(
+async function typeIntoSelector(page, ctx, selector, text) {
+  const sel = JSON.stringify(selector);
+  await evalIn(
+    page,
+    ctx,
     `(() => {
-      const el = document.querySelector(${JSON.stringify(selector)});
-      if (!el) throw new Error('输入框不存在: ' + ${JSON.stringify(selector)});
+      const el = document.querySelector(${sel});
+      if (!el) throw new Error('元素不存在: ' + ${sel});
       el.focus();
       el.click();
       return true;
     })()`,
-    index,
   );
   try {
     await page.cdp("Input.insertText", { text: String(text) });
   } catch {
-    await page.evaluateInFrame(
+    await evalIn(
+      page,
+      ctx,
       `(() => {
-        const el = document.querySelector(${JSON.stringify(selector)});
+        const el = document.querySelector(${sel});
         const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
         Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, ${JSON.stringify(String(text))});
         el.dispatchEvent(new Event('input', { bubbles: true }));
         el.dispatchEvent(new Event('change', { bubbles: true }));
         return true;
       })()`,
-      index,
     );
   }
-  const back = await readFrameValue(page, index, selector);
+  let back = "";
+  try {
+    back = String(await evalIn(page, ctx, `(() => (document.querySelector(${sel}) || {}).value || '')()`)) || "";
+  } catch { /* ignore */ }
   return { ok: back === String(text), actual: back };
 }
 
-async function readFrameValue(page, index, selector) {
+/** 在 ctx 内点击元素（优先原生坐标点击，回退 JS click） */
+async function clickInSelector(page, ctx, selector) {
+  const sel = JSON.stringify(selector);
+  // 原生坐标点击（iframe 内元素需叠加 iframe 偏移；主文档直接用视口坐标）
   try {
-    return String(await page.evaluateInFrame(
-      `(() => (document.querySelector(${JSON.stringify(selector)}) || {}).value || '')()`,
-      index,
-    ) || "");
-  } catch {
-    return "";
-  }
+    if (ctx.kind === "frame") {
+      const pos = await elementViewportCenter(page, ctx.index, selector);
+      if (pos) {
+        await nativeClickAt(page, pos.x, pos.y);
+        return;
+      }
+    } else {
+      const pos = await page.evaluate(
+        `(() => {
+          const el = document.querySelector(${sel});
+          if (!el) return null;
+          el.scrollIntoView({ block: 'center', behavior: 'instant' });
+          const r = el.getBoundingClientRect();
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+        })()`,
+      );
+      if (pos?.x != null) {
+        await nativeClickAt(page, pos.x, pos.y);
+        return;
+      }
+    }
+  } catch { /* fall through to JS click */ }
+  await evalIn(
+    page,
+    ctx,
+    `(() => {
+      const el = document.querySelector(${sel});
+      if (!el) throw new Error('元素不存在: ' + ${sel});
+      el.click();
+      return true;
+    })()`,
+  );
 }
 
 async function readFrameCredentials(page, index) {
   try {
     const r = await page.evaluateInFrame(
       `(() => ({
-        u: (document.querySelector('#loginIdInput') || {}).value || '',
-        p: (document.querySelector('#passwordInput') || {}).value || '',
+        u: (document.querySelector(${JSON.stringify(LOGIN_USER_SEL)}) || {}).value || '',
+        p: (document.querySelector(${JSON.stringify(LOGIN_PASS_SEL)}) || {}).value || '',
         active: (document.activeElement || {}).id || '',
       }))()`,
       index,
@@ -272,6 +348,71 @@ async function readFrameCredentials(page, index) {
     return { u: String(r?.u || ""), p: String(r?.p || ""), active: String(r?.active || "") };
   } catch {
     return { u: "", p: "", active: "" };
+  }
+}
+
+// ============================ 页面状态 ============================
+
+async function pageUrl(page) {
+  try {
+    return String(await page.evaluate("location.href").catch(() => "") || "");
+  } catch {
+    return "";
+  }
+}
+
+async function ensurePageVisible(page) {
+  const vis = await page.evaluate("document.visibilityState").catch(() => "unknown");
+  if (vis === "visible") return;
+  log.warn(`浏览器页面当前不可见（${vis}），尝试恢复窗口…`);
+  try {
+    const win = await page.cdp?.("Browser.getWindowForTarget").catch(() => null);
+    if (win?.windowId != null) {
+      await page.cdp("Browser.setWindowBounds", { windowId: win.windowId, bounds: { windowState: "normal" } });
+    }
+    await page.sleep(0.6);
+  } catch { /* best-effort */ }
+}
+
+// 可见错误文本选择器：主文档与登录 iframe 的 DOM 实测不同，各保留一套。
+const PAGE_ERROR_SELECTORS = [
+  ".error", "[role=\"alert\"]", ".sdps-form-element__error",
+  ".access-code-wrapper .sdps-form-element__error",
+  "lms-messenger", "#messenger", ".sdps-notification[type=\"error\"]", "sdps-form-element__error",
+];
+const FRAME_ERROR_SELECTORS = [
+  ".error", "[role=\"alert\"]", ".sdps-form-element__error",
+  ".access-code-wrapper .sdps-form-element__error", "[data-testid*=\"error\" i]", ".infomsg-margin",
+  "lms-messenger", "#messenger", ".sdps-notification[type=\"error\"]",
+];
+
+const ctxErrorSelectors = (ctx) => (ctx.kind === "page" ? PAGE_ERROR_SELECTORS : FRAME_ERROR_SELECTORS);
+
+/** 生成「收集可见错误文本」的内联 JS 片段（写入 varName 数组，消费方自行 join 截断） */
+function errorCollectSnippet(varName, selectors) {
+  return `const ${varName} = [];
+    for (const sel of ${JSON.stringify(selectors)}) {
+      for (const el of document.querySelectorAll(sel)) {
+        const t = (el.textContent || '').trim();
+        if (t && ${varName}.indexOf(t) < 0) ${varName}.push(t);
+      }
+    }`;
+}
+
+/** 抓取 ctx 页面可见错误文本 */
+async function readFormError(page, ctx) {
+  try {
+    const text = await evalIn(
+      page,
+      ctx,
+      `(() => {
+        ${errorCollectSnippet("out", ctxErrorSelectors(ctx))}
+        return out.join(' | ').slice(0, 400);
+      })()`,
+    );
+    return String(text || "").trim();
+  } catch {
+    return "";
   }
 }
 
@@ -379,120 +520,12 @@ function securityCodeSelector(ctx) {
   return ctx.mode === "id" ? SECURITY_CODE_ID : SECURITY_CODE_EL;
 }
 
-/** 在指定上下文（page 或 frame）执行 evaluateWithArgs 风格代码 */
-async function evalIn(page, ctx, code) {
-  if (ctx.kind === "frame") return page.evaluateInFrame(code, ctx.index);
-  return page.evaluate(code);
-}
-
-/** 在指定上下文向元素输入文本（优先 CDP native insertText，回退 Angular 兼容 setter） */
-async function typeIntoSelector(page, ctx, selector, text) {
-  const sel = JSON.stringify(selector);
-  await evalIn(
-    page,
-    ctx,
-    `(() => {
-      const el = document.querySelector(${sel});
-      if (!el) throw new Error('元素不存在: ' + ${sel});
-      el.focus();
-      el.click();
-      return true;
-    })()`,
-  );
-  try {
-    await page.cdp("Input.insertText", { text: String(text) });
-  } catch {
-    await evalIn(
-      page,
-      ctx,
-      `(() => {
-        const el = document.querySelector(${sel});
-        const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-        Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, ${JSON.stringify(String(text))});
-        el.dispatchEvent(new Event('input', { bubbles: true }));
-        el.dispatchEvent(new Event('change', { bubbles: true }));
-        return true;
-      })()`,
-    );
-  }
-  let back = "";
-  try {
-    back = String(await evalIn(page, ctx, `(() => (document.querySelector(${sel}) || {}).value || '')()`)) || "";
-  } catch { /* ignore */ }
-  return { ok: back === String(text), actual: back };
-}
-
-/** 在指定上下文点击元素（优先原生坐标点击，回退 JS click） */
-async function clickInSelector(page, ctx, selector) {
-  const sel = JSON.stringify(selector);
-  // 原生坐标点击（iframe 内元素需叠加 iframe 偏移；主文档直接用视口坐标）
-  try {
-    if (ctx.kind === "frame") {
-      const pos = await elementViewportCenter(page, ctx.index, selector);
-      if (pos) {
-        await nativeClickAt(page, pos.x, pos.y);
-        return;
-      }
-    } else {
-      const pos = await page.evaluate(
-        `(() => {
-          const el = document.querySelector(${sel});
-          if (!el) return null;
-          el.scrollIntoView({ block: 'center', behavior: 'instant' });
-          const r = el.getBoundingClientRect();
-          return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
-        })()`,
-      );
-      if (pos?.x != null) {
-        await nativeClickAt(page, pos.x, pos.y);
-        return;
-      }
-    }
-  } catch { /* fall through to JS click */ }
-  await evalIn(
-    page,
-    ctx,
-    `(() => {
-      const el = document.querySelector(${sel});
-      if (!el) throw new Error('元素不存在: ' + ${sel});
-      el.click();
-      return true;
-    })()`,
-  );
-}
-
-/** 最终登录成功 = 已到达客户主站（client.schwab.com / www.schwab.com 非登录路径） */
-function isFinalLoggedInUrl(url) {
-  const u = String(url || "");
-  if (isLoginPage(u)) return false;
-  // 仍在中转域（sws-gateway）或中转路由 → 未完成
-  if (/sws-gateway/i.test(u)) return false;
-  return /client\.schwab\.com|www\.schwab\.com/i.test(u);
-}
-
-/** 在验证码所在上下文读取错误文案 */
-async function readFormErrorAnywhere(page, ctx) {
-  const base = readFormError(page, ctx.index);
-  if (ctx.kind === "page" || ctx.index < 0) {
-    try {
-      const t = await page.evaluate(
-        `(() => {
-          const sels = ['.error', '[role="alert"]', '.sdps-form-element__error', '.access-code-wrapper .sdps-form-element__error', 'lms-messenger', '#messenger', '.sdps-notification[type="error"]', 'sdps-form-element__error'];
-          const out = [];
-          for (const sel of sels) {
-            for (const el of document.querySelectorAll(sel)) {
-              const t = (el.textContent || '').trim();
-              if (t && out.indexOf(t) < 0) out.push(t);
-            }
-          }
-          return out.join(' | ').slice(0, 400);
-        })()`,
-      );
-      const s = String(t || "").trim();
-      if (s) return s;
-    } catch { /* ignore */ }
-  }
-  return base;
+/** OTP 提交后单轮快照：错误文本 + 验证码框是否仍在（与 URL 探测合计每轮仅 2 次 eval） */
+function postSubmitProbeScript(ctx) {
+  return `(() => {
+    ${errorCollectSnippet("errs", ctxErrorSelectors(ctx))}
+    return { err: errs.join(' | ').slice(0, 400), code: ${SECURITY_CODE_PROBE} };
+  })()`;
 }
 
 /**
@@ -530,7 +563,7 @@ async function submitSecurityCodes(page, ctx, maxAttempts, resolveSecret, hooks 
     } catch { /* 无 target 选择页 */ }
 
     // 若页面已离开验证码页（跳转成功/报错跳回），交给外层轮询判断
-    const stillThere = await locateSecurityCode(page, ctx.kind === "frame" ? ctx.index : undefined);
+    const stillThere = await locateSecurityCode(page, ctx.kind === "frame" ? ctx.index : -1);
     if (!stillThere) {
       const u = await pageUrl(page);
       return isFinalLoggedInUrl(u);
@@ -554,15 +587,20 @@ async function submitSecurityCodes(page, ctx, maxAttempts, resolveSecret, hooks 
     }
     // 提交后自适应等待服务器响应：嘉信校验往返可能 >1s，固定短等待会把
     // 「还在处理中」误判成「未通过」，白白消耗重试次数。
+    // 每轮 = pageUrl（1 次 eval）+ 表单上下文 {错误文本, 输入框存在} 快照（1 次 eval）。
     let errText = "";
-    for (let waited = 0; waited < 10_000; waited += 400) {
-      await page.sleep(0.4);
+    const probeScript = postSubmitProbeScript(codeCtx);
+    for (let waited = 0; waited < OTP_SERVER_WAIT_MS; waited += OTP_SERVER_POLL_MS) {
+      await page.sleep(OTP_SERVER_POLL_MS / 1000);
       const u = await pageUrl(page);
       if (isFinalLoggedInUrl(u)) return true;
-      errText = await readFormErrorAnywhere(page, codeCtx);
+      let snap = null;
+      try { snap = await evalIn(page, codeCtx, probeScript); } catch { /* 导航切换中 */ }
+      if (!snap) continue;
+      errText = String(snap.err || "").trim();
       if (errText) break;
-      const still = await locateSecurityCode(page, codeCtx.kind === "frame" ? codeCtx.index : -1);
-      if (!still) break; // 已离开验证码页（跳转/换形态中），交由后续流程判断
+      // 输入框已消失（跳转/换形态中），交由外层轮询重新定位
+      if (!String(snap.code || "")) break;
     }
     if (attempt < maxAttempts) {
       hooks.onRetry?.(errText || "页面仍停留");
@@ -585,62 +623,204 @@ async function submitSecurityCodes(page, ctx, maxAttempts, resolveSecret, hooks 
   return false;
 }
 
-// ============================ 页面状态 ============================
+// ============================ 登录流程步骤 ============================
 
-async function pageUrl(page) {
+/** 关 OneTrust cookie 弹层（可能遮挡点击） */
+async function dismissCookieBanner(page) {
   try {
-    return String(await page.evaluate("location.href").catch(() => "") || "");
-  } catch {
-    return "";
-  }
-}
-
-async function ensurePageVisible(page) {
-  const vis = await page.evaluate("document.visibilityState").catch(() => "unknown");
-  if (vis === "visible") return;
-  log.warn(`浏览器页面当前不可见（${vis}），尝试恢复窗口…`);
-  try {
-    const win = await page.cdp?.("Browser.getWindowForTarget").catch(() => null);
-    if (win?.windowId != null) {
-      await page.cdp("Browser.setWindowBounds", { windowId: win.windowId, bounds: { windowState: "normal" } });
-    }
-    await page.sleep(0.6);
-  } catch { /* best-effort */ }
-}
-
-/** 从 iframe 页面抓取可见错误文本 */
-async function readFormError(page, index) {
-  try {
-    const text = await page.evaluateInFrame(
+    await page.evaluate(
       `(() => {
-        const sels = ['.error', '[role="alert"]', '.sdps-form-element__error', '.access-code-wrapper .sdps-form-element__error', '[data-testid*="error" i]', '.infomsg-margin', 'lms-messenger', '#messenger', '.sdps-notification[type="error"]'];
-        const out = [];
-        for (const sel of sels) {
-          for (const el of document.querySelectorAll(sel)) {
-            const t = (el.textContent || '').trim();
-            if (t && out.indexOf(t) < 0) out.push(t);
-          }
+        const btns = ['#onetrust-accept-btn-handler', '#accept-recommended-btn-handler'];
+        for (const s of btns) {
+          const b = document.querySelector(s);
+          if (b) { b.click(); return 'ok'; }
         }
-        return out.join(' | ').slice(0, 400);
+        const pc = document.getElementById('onetrust-pc-sdk');
+        const filter = document.querySelector('.onetrust-pc-dark-filter');
+        if (pc) pc.style.display = 'none';
+        if (filter) filter.style.display = 'none';
+        return 'closed';
       })()`,
-      index,
     );
-    return String(text || "").trim();
-  } catch {
-    return "";
-  }
+  } catch { /* ignore */ }
 }
 
-// ============================ 登录流程 ============================
+/** 等待登录 widget iframe 与用户名输入框就绪 */
+async function waitForLoginFrame(page) {
+  const deadline = Date.now() + LOGIN_FRAME_WAIT_MS;
+  let frameIndex = -1;
+  while (Date.now() < deadline) {
+    frameIndex = gatewayFrameIndex(await listFrames(page));
+    if (frameIndex >= 0 && (await waitFrameSelector(page, frameIndex, LOGIN_USER_SEL, FRAME_PROBE_FAST_MS))) {
+      return { frameIndex, ready: true };
+    }
+    await page.sleep(0.5);
+  }
+  frameIndex = gatewayFrameIndex(await listFrames(page));
+  const ready = frameIndex >= 0 && (await waitFrameSelector(page, frameIndex, LOGIN_USER_SEL, FRAME_PROBE_FINAL_MS));
+  return { frameIndex, ready };
+}
+
+/**
+ * 第 1 步凭据填写。配置/命令行已提供凭据 → 直接填写（最可靠，不依赖 autofill）。
+ * 兜底分支（浏览器保存凭据 / 人工等待）仅在未提供凭据时触发——常规路径下
+ * readConfigValue 已强制用户名/密码存在，理论不可达，保留为显式覆盖场景。
+ */
+async function fillFirstStep(page, frameIndex, { user, pass, manualWait, configFile }) {
+  if (user && pass) {
+    log.info(`使用配置文件/命令行凭据填写表单（用户：${user}）…`);
+    const fctx = frameCtx(frameIndex);
+    const r1 = await typeIntoSelector(page, fctx, LOGIN_USER_SEL, user);
+    if (!r1.ok) throw new CommandExecutionError(`用户名填写失败（回读 ${JSON.stringify(r1.actual)}）`);
+    const r2 = await typeIntoSelector(page, fctx, LOGIN_PASS_SEL, pass);
+    if (!r2.ok) throw new CommandExecutionError(`密码填写失败（回读 ${JSON.stringify(r2.actual)}）`);
+    return { credentialSource: "config", detectedUser: "" };
+  }
+  // 兜底：原生点击用户名输入框 → 触发浏览器保存的凭据下拉 → 键盘选择
+  log.info("点击用户名输入框，尝试调用浏览器保存的凭据…");
+  const pos = await elementViewportCenter(page, frameIndex, LOGIN_USER_SEL);
+  if (!pos) throw new CommandExecutionError("无法计算用户名输入框坐标");
+  await nativeClickAt(page, pos.x, pos.y);
+  await page.sleep(0.8);
+  let creds = await readFrameCredentials(page, frameIndex);
+  if (!creds.u || !creds.p) {
+    await nativeKeyPress(page, "ArrowDown");
+    await page.sleep(0.4);
+    await nativeKeyPress(page, "Enter");
+    await page.sleep(0.8);
+    creds = await readFrameCredentials(page, frameIndex);
+  }
+  if (creds.u && creds.p) {
+    log.success(`浏览器保存的凭据已填充：${creds.u}`);
+    return { credentialSource: "browser-saved", detectedUser: creds.u };
+  }
+  if (manualWait > 0) {
+    log.warn(
+      `未能在自动化中触发 autofill（Chromium 对调试标签页会抑制密码下拉）。` +
+        `请在浏览器窗口点击登录页「用户名」输入框选择保存的凭据，` +
+        `插件将在 ${manualWait} 秒内自动继续…`,
+    );
+    const wait = waitForCondition(page, manualWait * 1000);
+    const filled = await wait(async () => {
+      const c = await readFrameCredentials(page, frameIndex);
+      return Boolean(c.u && c.p);
+    });
+    if (filled) {
+      const c = await readFrameCredentials(page, frameIndex);
+      log.success(`检测到表单已填充：${c.u}`);
+      return { credentialSource: "manual-wait", detectedUser: c.u };
+    }
+    throw new CommandExecutionError(
+      "等待人工填充超时（用户名/密码仍为空）",
+      `请检查配置文件 ${configFile} 的 ${CFG_KEY_USER}/${CFG_KEY_PASS}，或改用 --user/--pass`,
+    );
+  }
+  throw new CommandExecutionError(
+    "浏览器保存的凭据未能自动填充（用户名/密码为空）",
+    `请检查配置文件 ${configFile} 的 ${CFG_KEY_USER}/${CFG_KEY_PASS}，或用 --user/--pass 显式登录`,
+  );
+}
+
+/**
+ * 点击登入后的状态机轮询（登录页 → sws-gateway 中转 → 验证码页 → 客户主站）：
+ *   到达客户主站             → 成功，返回 { finalUrl, otpAttempts }
+ *   出现验证码输入框         → submitSecurityCodes 内部循环提交 TOTP
+ *   登录 iframe 出现致命错误 → 抛 AuthRequiredError
+ *   窗口耗尽                 → 抛 CommandExecutionError
+ * 安全码有时效（TOTP 30s 窗口），跳转一完成就要立即填码：
+ *   快路径 = 每轮单次 eval 只探主文档（实测 placeholder 页输入框在主文档，且是整页跳转）；
+ *   慢路径 = 每 FULL_SCAN_EVERY 轮做一次全 frame 扫描（兼容验证码在 iframe 内的形态）。
+ */
+async function runPostLoginPoll(page, frameIndex, { maxAttempts, resolveSecret }) {
+  let otpAttempts = 0;
+  let lastError = "";
+  let diagnosed = false;
+  let otpHostSince = 0;
+  let pollIter = 0;
+  const pollStart = Date.now();
+
+  while (Date.now() - pollStart < POST_LOGIN_WAIT_MS) {
+    // 1) 是否已到达客户主站
+    const curUrl = await pageUrl(page);
+    if (isFinalLoggedInUrl(curUrl)) {
+      log.success(`登录成功：${curUrl}`);
+      return { finalUrl: curUrl, otpAttempts };
+    }
+    // 2) 验证码页检测
+    let codeCtx = null;
+    try {
+      const m = String(await page.evaluate(SECURITY_CODE_PROBE) || "");
+      if (m) codeCtx = { kind: "page", index: -1, mode: m };
+    } catch { /* 导航切换中，上下文暂不可用 */ }
+    let liveFrame = -1;
+    if (!codeCtx && pollIter % FULL_SCAN_EVERY === 1) {
+      liveFrame = gatewayFrameIndex(await listFrames(page));
+      codeCtx = await locateSecurityCode(page, liveFrame);
+    }
+    pollIter += 1;
+    if (codeCtx) {
+      log.info(`检测到验证码输入框（${codeCtx.kind === "page" ? "主文档" : `iframe[${codeCtx.index}]`}）`);
+      const ok = await submitSecurityCodes(page, codeCtx, maxAttempts, resolveSecret, {
+        onAttempt: () => {
+          otpAttempts += 1;
+          log.info(`提交 OTP（第 ${otpAttempts}/${maxAttempts} 次）…`);
+        },
+        onRetry: (reason) => log.warn(`OTP 未通过：${reason || "页面仍停留"}，清空重试…`),
+        onExhausted: (reason) => { lastError = reason || "OTP 提交失败"; },
+      });
+      if (ok) {
+        const u = await pageUrl(page);
+        log.success(`登录成功：${u}`);
+        return { finalUrl: u, otpAttempts };
+      }
+    }
+    // 停在 placeholder/验证页 CHALLENGE_DIAGNOSTIC_MS 仍找不到输入框 → 打印一次实况诊断（勿高频，拖慢轮询）
+    if (/#\/placeholder|challenge|otp|verify|securitycode/i.test(curUrl)) {
+      if (!otpHostSince) otpHostSince = Date.now();
+      if (!diagnosed && !codeCtx && Date.now() - otpHostSince > CHALLENGE_DIAGNOSTIC_MS) {
+        diagnosed = true;
+        log.info("[诊断] 验证码页迟迟未出现输入框，采集 DOM 实况…");
+        await dumpLoginTransition(page, liveFrame);
+      }
+    }
+    // 3) 登录页出现错误 → 终止
+    const errText = await readFormError(page, frameCtx(frameIndex));
+    if (errText) {
+      lastError = errText;
+      if (FATAL_ERROR_RE.test(errText)) {
+        throw new AuthRequiredError(
+          "client.schwab.com",
+          `嘉信登录被服务器拒绝: ${errText}`,
+          `请核对配置文件中 ${CFG_KEY_PASS} 密码、${CFG_KEY_SECRET} 密钥；不要盲目重试以免锁定`,
+        );
+      }
+    }
+    // 快路径每轮仅 1-2 次轻量 exec，短间隔以尽早捕捉输入框渲染（TOTP 时效敏感）
+    await page.sleep(0.3);
+  }
+
+  const finalUrl = await pageUrl(page);
+  if (isFinalLoggedInUrl(finalUrl)) {
+    return { finalUrl, otpAttempts };
+  }
+  throw new CommandExecutionError(
+    `登录未完成（等待跳转超时）; 页面: ${finalUrl.slice(0, 120)}`,
+    lastError
+      ? `最后原因: ${lastError}`
+      : "点击登入后浏览器未跳转，可能是网络/服务器异常，可重试一次",
+  );
+}
+
+// ============================ 命令注册 ============================
 
 cli({
   site: SITE,
   name: "login",
   description:
-    "自动登录嘉信理财（client.schwab.com，两步）：凭据/密钥统一从 ~/.duckdb/stock/stock.config 读取（SCHWAB_USERNAME / SCHWAB_PASSWORD / SCHWAB_SCRET），也可 --user/--pass/--secret 覆盖；TOTP 验证码自动填入",
+    "自动登录嘉信理财（client.schwab.com，两步）：凭据/密钥统一从 ~/.duckdb/stock/stock.config 读取（SCHWAB_USERNAME / SCHWAB_PASSWORD / SCHWAB_SECRET，兼容旧键 SCHWAB_SCRET），也可 --user/--pass/--secret 覆盖；TOTP 验证码自动填入",
   access: "write",
   example:
-    "opencli schwab login                           # 配置文件凭据 + TOTP 自动登录\nopencli schwab login --user u --pass p            # 命令行凭据覆盖配置\nopencli schwab login --wait-manual                # 人工在窗口点选保存的密码，自动继续\nopencli schwab login --config /path/to/stock.config",
+    "opencli stock login                           # 配置文件凭据 + TOTP 自动登录\nopencli stock login --user u --pass p            # 命令行凭据覆盖配置\nopencli stock login --wait-manual                # 人工在窗口点选保存的密码，自动继续\nopencli stock login --config /path/to/stock.config",
   domain: "client.schwab.com",
   strategy: Strategy.UI,
   browser: true,
@@ -654,7 +834,7 @@ cli({
     { name: "pass", type: "string", default: "", help: `密码；缺省读配置文件 ${CFG_KEY_PASS}` },
     { name: "config", type: "string", default: DEFAULT_CONFIG_FILE, help: `配置文件路径（默认 ${DEFAULT_CONFIG_FILE}）` },
     { name: "wait-manual", type: "int", default: 0, help: `凭据不可用时等待人工在浏览器窗口填充的秒数（默认 0=不等待，>0 启用）` },
-    { name: "secret", type: "string", default: "", help: `TOTP base32 密钥；缺省读配置文件 ${CFG_KEY_SECRET}` },
+    { name: "secret", type: "string", default: "", help: `TOTP base32 密钥；缺省读配置文件 ${CFG_KEY_SECRET}（兼容旧键 ${CFG_KEY_SECRET_LEGACY}）` },
     { name: "max-attempts", type: "int", default: 3, help: "OTP 验证码提交的最大重试次数（1-6），每次自动生成新码" },
     // 声明 timeout 参数后 opencli 框架按此值下发整条命令的 deadline；
     // 缺省值必须覆盖「点击登入 → 嘉信慢跳转（实测可达 90s）→ OTP 页渲染 → 提交重试」全程
@@ -668,20 +848,19 @@ cli({
     const configFile = String(kwargs.config || DEFAULT_CONFIG_FILE).trim();
 
     // 统一配置：命令行参数 > 配置文件（用户名/密码/密钥）
+    warnIfConfigPermsLoose(configFile);
     const config = readKeyValueConfig(configFile);
-    const user = String(kwargs.user || "").trim() || readConfigValue(config, CFG_KEY_USER, configFile);
-    const pass = String(kwargs.pass || "")
-      || readConfigValue(config, CFG_KEY_PASS, configFile);
+    const user = String(kwargs.user || "").trim() || readConfigValue(config, [CFG_KEY_USER], configFile);
+    const pass = String(kwargs.pass || "") || readConfigValue(config, [CFG_KEY_PASS], configFile);
     const explicitSecret = String(kwargs.secret || "").trim();
     let secretCache = null;
     const resolveSecret = () => {
       if (secretCache === null) {
-        secretCache = explicitSecret || readConfigValue(config, CFG_KEY_SECRET, configFile);
+        secretCache = explicitSecret || readConfigValue(config, [CFG_KEY_SECRET, CFG_KEY_SECRET_LEGACY], configFile);
       }
       return secretCache;
     };
 
-    let detectedUser = user;
     const done = (status, credentialSource, otpAttempts, url, u = "") =>
       [{ status, user: u || user, credentialSource, otpAttempts, finalUrl: url }];
 
@@ -694,37 +873,14 @@ cli({
       return done("already_logged_in", "none", 0, startUrl);
     }
 
-    // 关 OneTrust cookie 弹层（可能遮挡点击）
-    try {
-      await page.evaluate(
-        `(() => {
-          const btns = ['#onetrust-accept-btn-handler', '#accept-recommended-btn-handler'];
-          for (const s of btns) {
-            const b = document.querySelector(s);
-            if (b) { b.click(); return 'ok'; }
-          }
-          const pc = document.getElementById('onetrust-pc-sdk');
-          const filter = document.querySelector('.onetrust-pc-dark-filter');
-          if (pc) pc.style.display = 'none';
-          if (filter) filter.style.display = 'none';
-          return 'closed';
-        })()`,
-      );
-    } catch { /* ignore */ }
+    await dismissCookieBanner(page);
 
-    // 等待登录 widget iframe 与用户名输入框就绪
-    let frameIndex = -1;
-    const deadline = Date.now() + 30000;
-    while (Date.now() < deadline) {
-      frameIndex = gatewayFrameIndex(await listFrames(page));
-      if (frameIndex >= 0 && await waitFrameSelector(page, frameIndex, "#loginIdInput", 2000)) break;
-      await page.sleep(0.5);
-    }
-    if (frameIndex < 0 || !(await waitFrameSelector(page, frameIndex, "#loginIdInput", 3000))) {
+    const { frameIndex, ready } = await waitForLoginFrame(page);
+    if (!ready) {
       const cur = await pageUrl(page);
       if (!isLoginPage(cur)) return done("already_logged_in", "none", 0, cur);
       throw new CommandExecutionError(
-        `未能定位嘉信登录输入框（iframe ${GATEWAY_HOST} / #loginIdInput）`,
+        `未能定位嘉信登录输入框（iframe ${GATEWAY_HOST} / ${LOGIN_USER_SEL}）`,
         "请确认登录页可访问，以及浏览器扩展/调试桥已连接",
       );
     }
@@ -732,161 +888,19 @@ cli({
     await ensurePageVisible(page);
 
     // ---- 第 1 步：用户名 + 密码 ----
-    // 配置已提供凭据 → 直接填写（最可靠，不依赖浏览器 autofill）。
-    // 若凭据为空（理论上不会走到这，因 readConfigValue 已强制），才退化到
-    // 浏览器保存凭据 / 人工等待。
-    let credentialSource = "config";
-    if (user && pass) {
-      log.info(`使用配置文件/命令行凭据填写表单（用户：${user}）…`);
-      const r1 = await typeIntoFrame(page, frameIndex, "#loginIdInput", user);
-      if (!r1.ok) throw new CommandExecutionError(`用户名填写失败（回读 ${JSON.stringify(r1.actual)}）`);
-      const r2 = await typeIntoFrame(page, frameIndex, "#passwordInput", pass);
-      if (!r2.ok) throw new CommandExecutionError(`密码填写失败（回读 ${JSON.stringify(r2.actual)}）`);
-    } else {
-      // 兜底：原生点击用户名输入框 → 触发浏览器保存的凭据下拉 → 键盘选择
-      log.info("点击用户名输入框，尝试调用浏览器保存的凭据…");
-      const pos = await elementViewportCenter(page, frameIndex, "#loginIdInput");
-      if (!pos) throw new CommandExecutionError("无法计算用户名输入框坐标");
-      await nativeClickAt(page, pos.x, pos.y);
-      await page.sleep(0.8);
-      let creds = await readFrameCredentials(page, frameIndex);
-      if (!creds.u || !creds.p) {
-        await nativeKeyPress(page, "ArrowDown");
-        await page.sleep(0.4);
-        await nativeKeyPress(page, "Enter");
-        await page.sleep(0.8);
-        creds = await readFrameCredentials(page, frameIndex);
-      }
-      if (creds.u && creds.p) {
-        detectedUser = creds.u;
-        credentialSource = "browser-saved";
-        log.success(`浏览器保存的凭据已填充：${creds.u}`);
-      } else if (manualWait > 0) {
-        log.warn(
-          `未能在自动化中触发 autofill（Chromium 对调试标签页会抑制密码下拉）。` +
-            `请在浏览器窗口点击登录页「用户名」输入框选择保存的凭据，` +
-            `插件将在 ${manualWait} 秒内自动继续…`,
-        );
-        const wait = waitForCondition(manualWait * 1000);
-        const filled = await wait(async () => {
-          const c = await readFrameCredentials(page, frameIndex);
-          return Boolean(c.u && c.p);
-        });
-        if (filled) {
-          const c = await readFrameCredentials(page, frameIndex);
-          detectedUser = c.u;
-          credentialSource = "manual-wait";
-          log.success(`检测到表单已填充：${c.u}`);
-        } else {
-          throw new CommandExecutionError(
-            "等待人工填充超时（用户名/密码仍为空）",
-            `请检查配置文件 ${configFile} 的 ${CFG_KEY_USER}/${CFG_KEY_PASS}，或改用 --user/--pass`,
-          );
-        }
-      } else {
-        throw new CommandExecutionError(
-          "浏览器保存的凭据未能自动填充（用户名/密码为空）",
-          `请检查配置文件 ${configFile} 的 ${CFG_KEY_USER}/${CFG_KEY_PASS}，或用 --user/--pass 显式登录`,
-        );
-      }
-    }
+    const { credentialSource, detectedUser } = await fillFirstStep(page, frameIndex, {
+      user, pass, manualWait, configFile,
+    });
 
     // ---- 提交登录（第 1 步表单） ----
     await ensurePageVisible(page);
     log.info("点击登入，等待浏览器跳转…");
-    await clickInFrame(page, frameIndex, "#btnLogin");
+    await clickInSelector(page, frameCtx(frameIndex), LOGIN_SUBMIT_SEL);
 
-    // 提交后浏览器自动跳转：登录页 → sws-gateway 中转 → （可能）验证码页 → 客户主站。
-    // 状态机：
-    //   登录页/中转页  → 等待跳转
-    //   出现 #securityCode  → 填 TOTP 并提交
-    //   到达 client.schwab.com 非登录页 → 成功
-    let otpAttempts = 0;
-    let loginDone = false;
-    let lastError = "";
-    let diagnosed = false;
-    let otpHostSince = 0;
-    let pollIter = 0;
-    const pollStart = Date.now();
-    // 实测嘉信点击登入后到 #/placeholder 出现可能耗时 60-90s，输入框渲染更晚；
-    // 轮询窗口必须覆盖「慢跳转 + OTP 页渲染 + 多次提交重试」全程。
-    const TOTAL_WAIT_MS = 150 * 1000;
-
-    while (!loginDone && Date.now() - pollStart < TOTAL_WAIT_MS) {
-      // 1) 是否已到达客户主站
-      const curUrl = await pageUrl(page);
-      if (isFinalLoggedInUrl(curUrl)) {
-        loginDone = true;
-        log.success(`登录成功：${curUrl}`);
-        return done("logged_in", credentialSource, otpAttempts, curUrl, detectedUser || user);
-      }
-      // 2) 验证码页检测。安全码有时效（TOTP 30s 窗口），跳转一完成就要立即填码：
-      //    快路径 = 单次 exec 只探主文档（实测 placeholder 页输入框在主文档，且是整页跳转）；
-      //    慢路径 = 每 4 轮做一次全 frame 扫描（兼容验证码在 iframe 内的形态）。
-      let codeCtx = null;
-      try {
-        const m = String(await page.evaluate(SECURITY_CODE_PROBE) || "");
-        if (m) codeCtx = { kind: "page", index: -1, mode: m };
-      } catch { /* 导航切换中，上下文暂不可用 */ }
-      let liveFrame = -1;
-      if (!codeCtx && pollIter % 4 === 1) {
-        liveFrame = gatewayFrameIndex(await listFrames(page));
-        codeCtx = await locateSecurityCode(page, liveFrame);
-      }
-      pollIter += 1;
-      if (codeCtx) {
-        log.info(`检测到验证码输入框（${codeCtx.kind === "page" ? "主文档" : `iframe[${codeCtx.index}]`}）`);
-        const ok = await submitSecurityCodes(page, codeCtx, maxAttempts, resolveSecret, {
-          onAttempt: () => {
-            otpAttempts += 1;
-            log.info(`提交 OTP（第 ${otpAttempts}/${maxAttempts} 次）…`);
-          },
-          onRetry: (reason) => log.warn(`OTP 未通过：${reason || "页面仍停留"}，清空重试…`),
-          onExhausted: (reason) => { lastError = reason || "OTP 提交失败"; },
-        });
-        if (ok) {
-          loginDone = true;
-          const u = await pageUrl(page);
-          log.success(`登录成功：${u}`);
-          return done("logged_in", credentialSource, otpAttempts, u, detectedUser || user);
-        }
-      }
-      // 停在 placeholder/验证页 15s 仍找不到输入框 → 打印一次实况诊断（勿高频，拖慢轮询）
-      if (/#\/placeholder|challenge|otp|verify|securitycode/i.test(curUrl)) {
-        if (!otpHostSince) otpHostSince = Date.now();
-        if (!diagnosed && !codeCtx && Date.now() - otpHostSince > 15000) {
-          diagnosed = true;
-          log.info("[诊断] 验证码页迟迟未出现输入框，采集 DOM 实况…");
-          await dumpLoginTransition(page, liveFrame);
-        }
-      }
-      // 3) 登录页出现错误 → 终止
-      const errText = await readFormError(page, frameIndex);
-      if (errText) {
-        lastError = errText;
-        if (FATAL_ERROR_RE.test(errText)) {
-          throw new AuthRequiredError(
-            "client.schwab.com",
-            `嘉信登录被服务器拒绝: ${errText}`,
-            "请核对配置文件中 SCHWAB_PASSWORD 密码、SCHWAB_SCRET 密钥；不要盲目重试以免锁定",
-          );
-        }
-      }
-      // 快路径每轮仅 1-2 次轻量 exec，短间隔以尽早捕捉输入框渲染（TOTP 时效敏感）
-      await page.sleep(0.3);
-    }
-
-    if (!loginDone) {
-      const finalUrl = await pageUrl(page);
-      if (isFinalLoggedInUrl(finalUrl)) {
-        return done("logged_in", credentialSource, otpAttempts, finalUrl, detectedUser || user);
-      }
-      throw new CommandExecutionError(
-        `登录未完成（${Date.now() - pollStart < TOTAL_WAIT_MS ? "状态异常" : "等待跳转超时"}）; 页面: ${finalUrl.slice(0, 120)}`,
-        lastError
-          ? `最后原因: ${lastError}`
-          : "点击登入后浏览器未跳转，可能是网络/服务器异常，可重试一次",
-      );
-    }
+    // ---- 第 2 步：跳转 / OTP / 成功判定（状态机） ----
+    const { finalUrl, otpAttempts } = await runPostLoginPoll(page, frameIndex, {
+      maxAttempts, resolveSecret,
+    });
+    return done("logged_in", credentialSource, otpAttempts, finalUrl, detectedUser || user);
   },
 });

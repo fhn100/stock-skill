@@ -4,6 +4,6 @@
   "type": "module",
   "description": "股票交易数据处理脚本",
   "dependencies": {
-    "@duckdb/node-api": "^1.5.5-r.4"
+    "@duckdb/node-api": "^2.0.0-r.1"
   }
 }

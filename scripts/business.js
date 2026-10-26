@@ -103,7 +103,7 @@ export function greedyMatch(buys, sells) {
     const avail = [];
     let bi = 0;
     for (const sell of gSells) {
-      while (bi < gBuys.length && byTime(gBuys[bi], sell) <= 0) avail.push(gBuys[bi++]);
+      while (bi < gBuys.length && gBuys[bi].entry_ts.getTime() <= sell.entry_ts.getTime()) avail.push(gBuys[bi++]);
       // 从可用买入里取时间最新（即 avail 尾部反向扫描）且盈利的买入
       for (let i = avail.length - 1; i >= 0; i--) {
         if (avail[i].matchMoney < sell.matchMoney) {

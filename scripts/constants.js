@@ -15,7 +15,7 @@ export const OP = { BUY: "1", SELL: "2" };
 
 /**
  * 市场码。`market_code = 'US'` 是「美股账户」的判定依据，串起三条不变量：
- * import-csv 写入、profit 的「0 过户费」清理排除、GRID_PROFIT 的币种派生（US→USD）。
+ * `opencli stock sync-schwab` 写入、profit 的「0 过户费」清理排除、GRID_PROFIT 的币种派生（US→USD）。
  * 集中定义，避免三处 'US' 字面量各自漂移。
  */
 export const MARKET = { US: "US" };

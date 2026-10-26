@@ -26,7 +26,7 @@ const NOT_US_ACCOUNT = `account_id IS NULL OR account_id NOT IN (SELECT account_
  * 清理脏数据（过户费=0 的旧快照）：
  * - 匹配记录：清理【查询月份范围】内的记录 → tradeMatch 会用交易表的最新费用重新配对（安全）
  * - 交易记录：本脚本不再同步数据，删除后无法重拉，只统计并提示用 `opencli stock sync` 修复
- * - 美股账户（import-csv.js 导入）过户费恒为 0，已排除，不做清理也不计入口径提示
+ * - 美股账户（sync-schwab 同步）过户费恒为 0，已排除，不做清理也不计入口径提示
  * @param {string} start - 查询起始月 YYYY-MM
  * @param {string} end - 查询结束月 YYYY-MM
  */

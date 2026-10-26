@@ -8,17 +8,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 
 import { greedyMatch, netMoneyOf, matchMoneyOf } from "./business.js";
 import { OP } from "./constants.js";
 import { TRADE_COLUMNS, TRADE_RECORD_DDL, TRADE_MATCHED_DDL } from "./schema.js";
 import { monthRange, lastDayOfMonth, displayWidth, renderTable, maskAccountName } from "./utils.js";
-import {
-  parseCsv, findHeaderRow, buildColumnMap, parseMoney, parseDateTime, mapOp,
-  normalizeRow, stableHistoryId, dedupeHistoryIds, splitToShares, importCsv,
-} from "./import-csv.js";
 
 /** 构造一条流水：time 为 "YYYY-MM-DD HH:MM:SS" */
 const trade = (op, id, time, money, { count = 100, code = "600000", account = "A", fee = 0, commission = 0 } = {}) => ({
@@ -58,6 +53,14 @@ test("先卖后买不配对", () => {
   const buys = [trade(OP.BUY, "b1", "2026-02-01 10:00:00", 900)];
   const sells = [trade(OP.SELL, "s1", "2026-01-10 10:00:00", 1000)];
   assert.equal(greedyMatch(buys, sells).length, 0);
+});
+
+test("同时间戳买卖可配对：history_id 不影响跨类型可用性", () => {
+  const buys = [trade(OP.BUY, "zzz", "2026-01-10 10:00:00", 900)];
+  const sells = [trade(OP.SELL, "aaa", "2026-01-10 10:00:00", 1000)];
+  const pairs = greedyMatch(buys, sells);
+  assert.equal(pairs.length, 1);
+  assert.equal(pairs[0].buy.history_id, "zzz");
 });
 
 test("分组隔离：代码/数量/账户不同均不互配", () => {
@@ -202,123 +205,87 @@ test("schema.js TRADE_COLUMNS 与建表列集合一致", () => {
   assert.ok(sameSet(TRADE_COLUMNS, parseColumnNames(TRADE_RECORD_DDL)));
 });
 
-// ============================ CSV 导入：解析 ============================
+// ============================ 美股（嘉信）同步：纯函数守卫 ============================
 
-test("parseCsv 处理引号内逗号、CRLF 与 BOM", () => {
-  const rows = parseCsv("﻿\"Date\",\"Desc\",\"Amount\"\r\n\"01/01/2026\",\"a,b\",\"-1.5\"\r\n");
-  assert.deepEqual(rows[0], ["Date", "Desc", "Amount"]);
-  assert.deepEqual(rows[1], ["01/01/2026", "a,b", "-1.5"]);
+/**
+ * 美股交易记录唯一的写入路径是 opencli stock sync-schwab，被测逻辑就在插件脚本
+ * resources/stock/sync.js 里（导出的 schwabPure）。插件依赖未安装时跳过，不拖累其它用例。
+ */
+const schwab = await import(new URL("../resources/stock/sync.js", import.meta.url).href)
+  .then((m) => m.schwabPure)
+  .catch(() => null);
+const schwabSkip = schwab ? false : "未能加载 resources/stock/sync.js（先在 resources/stock 下 npm install）";
+
+// 2026-10-21 TSLA 卖出 1 股 @390：真实库里的既有主键，公式一改就会生成新键、
+// 与旧记录并存导致收益翻倍，所以这几个值是回归红线，不是随手写的样例。
+const GOLDEN_SELL_1_390 = "c89fb934437da3f7da870c4a";
+
+test("history_id 与 account_id 公式未漂移（与库中既有美股记录同一主键）", { skip: schwabSkip }, () => {
+  assert.equal(schwab.stableHistoryId("嘉信-冯", "2026-10-21 16:00:00", "TSLA", OP.SELL, 1, 390), GOLDEN_SELL_1_390);
+  assert.equal(schwab.stableHistoryId("嘉信-冯", "2026-10-21 16:00:00", "TSLA", OP.SELL, 1, "390.00"), GOLDEN_SELL_1_390);
+  // 数量或价格不同必须是不同主键
+  assert.notEqual(schwab.stableHistoryId("嘉信-冯", "2026-10-21 16:00:00", "TSLA", OP.SELL, 2, 390), GOLDEN_SELL_1_390);
+  assert.equal(schwab.schwabAccountId("嘉信-冯"), "US-c0e4a175de");
 });
 
-test("parseMoney 处理 $千分位、括号负数、空值", () => {
-  assert.equal(parseMoney("$1,234.56"), 1234.56);
-  assert.equal(parseMoney("(1,234.56)"), -1234.56);
-  assert.ok(Number.isNaN(parseMoney("")));
+test("parseSchwabMoney 处理 $千分位、负号、括号；parseSchwabDate 只认美式日期", { skip: schwabSkip }, () => {
+  assert.equal(schwab.parseSchwabMoney("$1,234.56"), 1234.56);
+  assert.equal(schwab.parseSchwabMoney("-$370.00"), -370);
+  assert.equal(schwab.parseSchwabMoney("(1,234.56)"), -1234.56);
+  assert.ok(Number.isNaN(schwab.parseSchwabMoney("")));
+  assert.equal(schwab.parseSchwabDate("10/23/2026"), "2026-10-23");
+  assert.equal(schwab.parseSchwabDate("2026-10-23"), null);
 });
 
-test("parseDateTime 支持美式/ISO/AM-PM/ET/多后缀串", () => {
-  assert.deepEqual(parseDateTime("10/23/2026"), { date: "2026-10-23", time: null });
-  assert.deepEqual(parseDateTime("2026-01-05"), { date: "2026-01-05", time: null });
-  assert.deepEqual(parseDateTime("2026-01-05 14:30:00"), { date: "2026-01-05", time: "14:30:00" });
-  assert.equal(parseDateTime("04/29/2026 09:30 AM").time, "09:30:00");
-  assert.equal(parseDateTime("04/29/2026 01:30 PM").time, "13:30:00");
-  assert.equal(parseDateTime("10/03/2025 as of 10/02/2025").date, "2025-10-03");
-  assert.equal(parseDateTime("04/29/2026 ET").date, "2026-04-29");
-  assert.equal(parseDateTime("09:30 AM"), null); // 无日期，拒绝
+test("mapSchwabAction：买卖→1/2，派息→6，出入金→18/19，其它→99", { skip: schwabSkip }, () => {
+  assert.equal(schwab.mapSchwabAction("Buy, Limit Price"), OP.BUY);
+  assert.equal(schwab.mapSchwabAction("Sell, Stop"), OP.SELL);
+  assert.equal(schwab.mapSchwabAction("Dividend Cash"), "6");
+  assert.equal(schwab.mapSchwabAction("Journal In"), "18");
+  assert.equal(schwab.mapSchwabAction("Transfer Out"), "19");
+  assert.equal(schwab.mapSchwabAction("Margin Interest"), "99");
+  assert.equal(schwab.mapSchwabAction(""), null);
 });
 
-test("mapOp：买卖→1/2，派息→6，journal→18，其它→99", () => {
-  assert.equal(mapOp("Buy, Limited Price"), OP.BUY);
-  assert.equal(mapOp("Sell Short"), OP.SELL);
-  assert.equal(mapOp("Dividend Cash"), "6");
-  assert.equal(mapOp("Journal In"), "18");
-  assert.equal(mapOp("Margin Interest"), "99");
-});
-
-// ============================ CSV 导入：行标准化 ============================
-
-const SCHWAB_HEADER = ["Date", "Action", "Symbol", "Description", "Quantity", "Price", "Fees & Comm", "Amount"];
-const colOf = () => buildColumnMap(SCHWAB_HEADER);
-const normOpts = { account: "嘉信-冯", accountId: "US-test" };
-
-test("normalizeRow：卖出净额入 entry_money，commission 恒 0（防重复扣费）", () => {
-  const cells = ["10/22/2026", "Sell", "TSLA", "TESLA INC", "1", "$387.00", "$0.01", "$386.99"];
-  const { record, warning } = normalizeRow(cells, colOf(), normOpts);
+test("normalizeSchwabTrade：卖出净额入 entry_money、美股无过户费、现金流水跳过", { skip: schwabSkip }, () => {
+  const ctx = { accountId: "US-c0e4a175de", accountName: "嘉信-冯", selectedAccountId: "10301685" };
+  const { record, warning } = schwab.normalizeSchwabTrade({
+    transactionDate: "10/22/2026", action: "Sell", symbol: "tsla", description: "TESLA INC",
+    shareQuantity: "1", executionPrice: "$387.00", feesAndCommission: "$0.01", amount: "$386.99",
+  }, ctx);
   assert.equal(warning, null);
   assert.equal(record.op, OP.SELL);
-  assert.equal(record.entry_count, 1);
-  assert.equal(record.entry_money, 386.99); // 已含费的净额
-  assert.equal(record.commission, 0);
+  assert.equal(record.code, "TSLA");
+  assert.equal(record.entry_date_time, "2026-10-22 16:00:00"); // 接口无成交时间，统一按收盘时间
+  assert.equal(record.entry_money, 386.99); // amount 已是扣费后净额
+  assert.equal(record.transfer_fee, 0);
   assert.equal(record.market_code, "US");
+  assert.equal(record.account_id, "US-c0e4a175de");
+
+  const cash = schwab.normalizeSchwabTrade(
+    { transactionDate: "09/29/2026", action: "Margin Interest", symbol: "", amount: "-$15.93" }, ctx);
+  assert.equal(cash.record, null);
+  assert.match(cash.warning, /无证券代码/);
 });
 
-test("normalizeRow：无 Symbol 的非交易流水被跳过", () => {
-  const cells = ["09/29/2026", "Margin Interest", "", "INTEREST", "", "", "", "-$15.93"];
-  const { record, warning } = normalizeRow(cells, colOf(), normOpts);
-  assert.equal(record, null);
-  assert.match(warning, /缺少代码/);
-});
-
-// ============================ CSV 导入：按 1 股拆分 ============================
-
-test("splitToShares：qty=3 → 3 条 1 股，金额守恒、价与费保留", () => {
+test("splitToShares：qty=3 → 3 条 1 股，共用 base 主键、金额守恒；qty=1 原样", { skip: schwabSkip }, () => {
   const r = { account_name: "嘉信-冯", entry_date_time: "2026-10-21 16:00:00", code: "TSLA", op: OP.SELL,
     entry_count: 3, entry_price: 390, entry_money: 779.98, entry_cost: 779.98, commission: 0 };
-  const out = splitToShares(r);
+  const out = schwab.splitToShares(r);
   assert.equal(out.length, 3);
-  assert.ok(out.every((x) => x.entry_count === 1 && x.entry_price === 390 && x.commission === 0));
+  assert.ok(out.every((x) => x.entry_count === 1 && x.entry_price === 390));
+  assert.equal(new Set(out.map((x) => x.history_id)).size, 1);
+  assert.equal(out[0].history_id, GOLDEN_SELL_1_390);
   assert.ok(Math.abs(out.reduce((s, x) => s + x.entry_money, 0) - 779.98) < 0.005);
+  assert.deepEqual(schwab.splitToShares({ ...r, entry_count: 1 }), [{ ...r, entry_count: 1 }]);
 });
 
-test("splitToShares：qty=1 原样返回；fractional 金额误差在容差内", () => {
-  const one = { entry_count: 1, entry_money: 370, entry_price: 370, account_name: "A", entry_date_time: "t", code: "X", op: OP.BUY };
-  assert.deepEqual(splitToShares(one), [one]);
-  const r = { ...one, entry_count: 3, entry_money: 100.01 };
-  const sum = splitToShares(r).reduce((s, x) => s + x.entry_money, 0);
-  assert.ok(Math.abs(sum - 100.01) < 0.005);
-});
-
-// ============================ CSV 导入：history_id 幂等 ============================
-
-test("stableHistoryId 确定性；qty/价格不同则不同", () => {
-  const a = stableHistoryId("嘉信-冯", "2026-10-21 16:00:00", "TSLA", OP.SELL, 1, 390);
-  assert.equal(a, stableHistoryId("嘉信-冯", "2026-10-21 16:00:00", "TSLA", OP.SELL, 1, 390));
-  assert.notEqual(a, stableHistoryId("嘉信-冯", "2026-10-21 16:00:00", "TSLA", OP.SELL, 2, 390));
-});
-
-test("dedupeHistoryIds：两条完全相同 → base + x02，不多不少", () => {
+test("dedupeHistoryIds：同键重复 → base + x02，不多不少", { skip: schwabSkip }, () => {
   const id = "aaaa1111bbbb2222cccc3333";
   const recs = [{ history_id: id }, { history_id: id }, { history_id: "distinct000000000000" }];
-  dedupeHistoryIds(recs);
-  const ids = recs.map((r) => r.history_id);
+  schwab.dedupeHistoryIds(recs);
+  const ids = recs.map((x) => x.history_id);
   assert.equal(new Set(ids).size, 3);
-  assert.ok(ids.some((x) => x === id));
+  assert.ok(ids.includes(id));
   assert.ok(ids.some((x) => x.endsWith("x02")));
-});
-
-// ============================ CSV 导入：端到端（importCsv 不写库） ============================
-
-test("importCsv：拆分后条数增加、买卖金额守恒、重跑幂等", async () => {
-  const tmp = path.join(os.tmpdir(), `selftest_schwab_${process.pid}.csv`);
-  fs.writeFileSync(tmp, [
-    SCHWAB_HEADER.join(","),
-    '"10/21/2026","Sell","TSLA","TESLA INC","2","$390.00","$0.02","$779.98"',
-    '"10/20/2026","Buy","TSLA","TESLA INC","1","$368.07","","-$368.07"',
-    '"09/29/2026","Margin Interest","","INTEREST","","","","-$15.93"',
-  ].join("\n"), "utf8");
-
-  const r1 = await importCsv(tmp, { split: true });
-  const r2 = await importCsv(tmp, { split: true });
-  fs.unlinkSync(tmp);
-
-  // 1 笔 qty=2 卖出 → 2 条；1 笔 qty=1 买入 → 1 条；Margin Interest 跳过
-  assert.equal(r1.parsed, 3);
-  assert.equal(r1.byOp[OP.SELL], 2);
-  assert.equal(r1.byOp[OP.BUY], 1);
-  // 金额守恒：卖出净额 = 779.98
-  const sellSum = r1.records.filter((x) => x.op === OP.SELL).reduce((s, x) => s + x.entry_money, 0);
-  assert.ok(Math.abs(sellSum - 779.98) < 0.005);
-  // 幂等：重跑 history_id 集合一致
-  const ids = (r) => r.records.map((x) => x.history_id).sort().join(",");
-  assert.equal(ids(r1), ids(r2));
 });
