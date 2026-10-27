@@ -354,7 +354,8 @@ const SCHEMA_GROUPS = [
          buy_time TIMESTAMP,
          sell_history_id VARCHAR,
          buy_history_id VARCHAR,
-         PRIMARY KEY(sell_history_id, buy_history_id))`,
+         match_type VARCHAR,
+         PRIMARY KEY(sell_history_id, buy_history_id, match_type))`,
       `CREATE INDEX IF NOT EXISTS idx_matched_sell_history ON ${TABLE.TRADE_MATCHED}(sell_history_id)`,
       `CREATE INDEX IF NOT EXISTS idx_matched_buy_history ON ${TABLE.TRADE_MATCHED}(buy_history_id)`,
       `CREATE INDEX IF NOT EXISTS idx_matched_sell_time ON ${TABLE.TRADE_MATCHED}(sell_time)`,
@@ -515,7 +516,13 @@ function dedupeHistoryIds(records) {
   for (const r of records) {
     const n = (seen.get(r.history_id) || 0) + 1;
     seen.set(r.history_id, n);
-    if (n > 1) r.history_id = `${r.history_id.slice(0, 22)}x${pad2(n)}`;
+    if (n > 1) {
+      // 拆股键形如 <主键>_3：后缀是股权序号，截断会把它吃掉，只在末尾追加去重标记
+      const split = /^(.*_\d+)$/.exec(r.history_id);
+      r.history_id = split
+        ? `${split[1]}x${pad2(n)}`
+        : `${r.history_id.slice(0, 22)}x${pad2(n)}`;
+    }
   }
   return records;
 }
@@ -599,6 +606,96 @@ function normalizeSchwabTrade(item, ctx) {
       : null,
     date,
   };
+}
+
+/**
+ * 买卖成交按 1 股拆成多条（配对脚本按 1 股粒度匹配，整笔 qty>1 无法与单股成交配对）：
+ * - 金额 / 费用按股均摊，除不尽的尾差落在最后一条，保证拆分前后合计不变
+ * - 主键 = 原主键（订单号或哈希）+ "_" + 股序号（1 起）；qty=1 保持原主键不加后缀
+ * - 现金流水（op=6/18/19/99）不拆
+ */
+function splitSchwabShares(r) {
+  const n = r.entry_count;
+  if (!(n > 1) || (r.op !== OP_US.BUY && r.op !== OP_US.SELL)) return [r];
+  const perMoney = round4(r.entry_money / n);
+  const perFee = round4(r.commission / n);
+  const out = [];
+  for (let i = 1; i <= n; i += 1) {
+    const last = i === n;
+    const money = last ? round4(r.entry_money - perMoney * (n - 1)) : perMoney;
+    const fee = last ? round4(r.commission - perFee * (n - 1)) : perFee;
+    out.push({
+      ...r,
+      entry_count: 1,
+      entry_money: money,
+      entry_cost: money,
+      commission: fee,
+      fee_total: fee,
+      history_id: `${r.history_id}_${i}`,
+    });
+  }
+  return out;
+}
+
+/**
+ * 订单号键（拆股后形如 `1007298688974_2`）；哈希键是 24 位十六进制（拆股后同样带 `_序号`）。
+ * 仅用于区分「这笔成交用的是哪种主键」，不参与主键生成。
+ */
+const isSchwabOrderKey = (id) => /^\d+(_\d+)?$/.test(String(id));
+
+/** 成交内容签名：同一笔成交无论接口是否给 schwabOrderId，这些字段都一致 */
+const schwabTradeSignature = (r) =>
+  [r.entry_date_time, r.code, r.op, Number(r.entry_count), round4(r.entry_price), round4(r.entry_money)].join("|");
+
+/**
+ * 嘉信接口的 schwabOrderId 偶发时有时无（实测 2026-10-27：2026-02-10 TSLA 卖出 1 股 @425
+ * 第一次返回 `1005383223451`、随后几次返回 `"0"`），同一笔成交会分别生成订单号键与哈希键。
+ * 按内容签名去重：同一签名下若只有另一种键，说明是同一笔的另一种表示，跳过本次写入；
+ * 同一种键的重复内容照常保留（如同日同价的多笔独立委托）。
+ * @param {object[]} records 归一化并拆股后的记录
+ * @param {object[]} existingRows 库中同账户的买卖记录（history_id + 内容字段）
+ * @returns {{records: object[], skipped: number}}
+ */
+function dropShadowSchwabTrades(records, existingRows = []) {
+  const classesOf = (rows, get) => {
+    const m = new Map();
+    for (const row of rows) {
+      const r = get(row);
+      if (r.op !== OP_US.BUY && r.op !== OP_US.SELL) continue;
+      const sig = schwabTradeSignature(r);
+      const set = m.get(sig) || new Set();
+      set.add(isSchwabOrderKey(r.history_id) ? "order" : "hash");
+      m.set(sig, set);
+    }
+    return m;
+  };
+
+  const existing = classesOf(existingRows, (row) => row);
+  const seen = new Map();
+  let skipped = 0;
+  const kept = [];
+  // 同一批里订单号键优先，避免与哈希键并存时保留错的那条
+  const ordered = [...records].sort(
+    (a, b) => Number(isSchwabOrderKey(b.history_id)) - Number(isSchwabOrderKey(a.history_id)),
+  );
+  for (const r of ordered) {
+    if (r.op !== OP_US.BUY && r.op !== OP_US.SELL) {
+      kept.push(r);
+      continue;
+    }
+    const sig = schwabTradeSignature(r);
+    const cls = isSchwabOrderKey(r.history_id) ? "order" : "hash";
+    const before = new Set([...(existing.get(sig) || []), ...(seen.get(sig) || [])]);
+    if (before.size > 0 && !before.has(cls)) {
+      skipped += 1;
+      continue;
+    }
+    const set = seen.get(sig) || new Set();
+    set.add(cls);
+    seen.set(sig, set);
+    kept.push(r);
+  }
+  return { records: kept, skipped };
 }
 
 /**
@@ -735,7 +832,7 @@ async function fetchSchwabRecords(page, { auth, selectedAccountId, accountName, 
         outOfRange = true;
         continue;
       }
-      records.push(record);
+      records.push(...splitSchwabShares(record));
     }
 
     // 末页不再返回游标；游标与本次请求相同则说明没有前进（防死循环）
@@ -782,34 +879,49 @@ async function syncSchwab(page, kwargs) {
     log.warn(`跳过/提示 ${warnings.length} 条：${warnings.slice(0, 5).join("；")}${warnings.length > 5 ? " …" : ""}`);
   }
 
-  const rows = records.map(toTradeValues);
+  const parsed = records.length;
   await page.goto(SCHWAB_SUMMARY_URL).catch(() => {});
 
   if (dryRun) {
-    log.success(`[dry-run] 接口返回 ${fetched} 条（${pages} 页），解析 ${rows.length} 条待写入，未写库`);
+    log.success(`[dry-run] 接口返回 ${fetched} 条（${pages} 页），解析 ${parsed} 条待写入，未写库`);
     return [{ account: accountName, fundKey: accountId, written: 0, pages, error: "dry-run" }];
   }
-  if (rows.length === 0) {
+  if (parsed === 0) {
     log.warn("区间内没有可写入的交易记录（接口已返回 0 条，或全部被日期过滤）");
     return [{ account: accountName, fundKey: accountId, written: 0, pages, error: "" }];
   }
 
   const db = await openDb();
+  let written = 0;
   try {
     await initSchema(db);
+    // 接口偶尔同一笔成交给/不给 schwabOrderId，两种主键并存会重复计收益，写入前按内容签名去重
+    const existing = await db.all(
+      `SELECT history_id, entry_date_time, code, op, entry_count, entry_price, entry_money
+         FROM ${TABLE.TRADE_RECORD}
+        WHERE market_code = ? AND account_id = ? AND op IN (?, ?)`,
+      [MARKET_US, accountId, OP_US.BUY, OP_US.SELL],
+    );
+    const { records: fresh, skipped } = dropShadowSchwabTrades(records, existing);
+    if (skipped > 0) {
+      log.warn(`跳过 ${skipped} 条与库中成交内容重复的流水（接口 schwabOrderId 时有时无，同一笔只保留一种键）`);
+    }
+    const rows = fresh.map(toTradeValues);
     await insertTrades(db, rows);
-    log.success(`嘉信交易记录同步成功：拉取 ${fetched} 条（${pages} 页）→ 写入 ${rows.length} 条（history_id 相同则覆盖，重跑不重复）→ ${DB_PATH}`);
+    written = rows.length;
+    log.success(`嘉信交易记录同步成功：拉取 ${fetched} 条（${pages} 页）→ 写入 ${written} 条（history_id 相同则覆盖，重跑不重复）→ ${DB_PATH}`);
   } finally {
     db.close();
   }
 
-  return [{ account: accountName, fundKey: accountId, written: rows.length, pages, error: "" }];
+  return [{ account: accountName, fundKey: accountId, written, pages, error: "" }];
 }
 
 /** 纯函数导出，供 scripts/selftest.js 做主键与金额口径回归（导入即注册命令，但不写库、不联网） */
 export const schwabPure = {
   round4, parseSchwabMoney, parseSchwabDate, mapSchwabAction,
-  stableHistoryId, schwabHistoryId, dedupeHistoryIds, normalizeSchwabTrade, schwabAccountId,
+  stableHistoryId, schwabHistoryId, dedupeHistoryIds, splitSchwabShares, dropShadowSchwabTrades,
+  normalizeSchwabTrade, schwabAccountId,
 };
 
 // ============================ 命令 ============================

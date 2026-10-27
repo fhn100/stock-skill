@@ -5,7 +5,7 @@
 ## 功能
 
 - 🔄 **数据同步**：`opencli stock sync` 复用浏览器登录态，自动分页同步同花顺账户与交易记录（接口在浏览器上下文内发起，token/Cookie 不落盘，幂等）
-- 🇺🇸 **嘉信接口同步**：`opencli stock sync-schwab`（先 `opencli stock login`）直连 `ausgateway.schwab.com` 交易接口拉美股成交，**美股数据的唯一写入路径**；按接口原样一条入库（含无代码的现金流水），`history_id` 幂等，重跑覆盖不重复
+- 🇺🇸 **嘉信接口同步**：`opencli stock sync-schwab`（先 `opencli stock login`）直连 `ausgateway.schwab.com` 交易接口拉美股成交，**美股数据的唯一写入路径**；买卖按 1 股拆分入库、无代码的现金流水照常入库（不拆），`history_id` 幂等，重跑覆盖不重复
 - 🔗 **交易匹配**：自动匹配买卖记录（最短持有优先，仅盈利配对）
 - 💰 **收益统计**：查询网格收益（含币种列，美股/A 股分列不可跨币种加总）
 - 🔍 **未匹配排查**：查询未配对的买卖记录
@@ -103,7 +103,7 @@ opencli stock sync-schwab                               # 全量同步（无日�
 cd ~/.agents/skills/stock-skill/scripts && node profit.js
 ```
 
-`history_id` 主键：美股成交用接口的 `schwabOrderId`；`schwabOrderId` 为 0 的记录（老交易与现金流水）回退「账户|时间|代码|方向|数量|价格」SHA1 前 24 位（前缀 `CSV|` 是历史命名）。**不要用 `itemIssueId`**——实测它跟证券绑定（同一只股票的所有成交共用一个 id），当主键会让同股成交互相挤占覆盖。同主键 INSERT OR REPLACE 覆盖，重跑与历史数据互不重复。
+`history_id` 主键：美股买卖按 1 股拆分，每条用「`schwabOrderId`_股序号」（qty=1 不加后缀）；`schwabOrderId` 为 0 的记录（老交易与现金流水）回退「账户|时间|代码|方向|数量|价格」SHA1 前 24 位作基础键（前缀 `CSV|` 是历史命名），拆股时同样追加 `_序号`。**不要用 `itemIssueId`**——实测它跟证券绑定（同一只股票的所有成交共用一个 id），当主键会让同股成交互相挤占覆盖。同主键 INSERT OR REPLACE 覆盖，重跑与历史数据互不重复。接口偶发不给 `schwabOrderId`，写入前按成交内容签名去重，同一笔只保留一种键（防重复计收益）。
 
 ## 命令参考
 
@@ -112,7 +112,7 @@ cd ~/.agents/skills/stock-skill/scripts && node profit.js
 | `opencli stock init-db` | 无 | 只初始化本地 DuckDB 表结构（sync 已自动执行） |
 | `opencli stock login` | `[--user] [--pass] [--secret] [--config] [--wait-manual]` | 自动登录嘉信理财 `client.schwab.com`（用户名+密码+TOTP 两步），凭据读 `~/.duckdb/stock/stock.config`；会话持久化供 `sync-schwab` 复用 |
 | `opencli stock sync` | `[startDate] [endDate] [--dry-run]` | 同花顺（A 股/港股）账户与交易记录同步，日期格式 YYYYMMDD，默认当月；需先登录同花顺投资决策页。美股不在这里，走 `opencli stock sync-schwab` |
-| `opencli stock sync-schwab` | `[startDate] [endDate] [--account] [--account-id] [--dry-run] [--timeout]` | **美股数据唯一写入路径**。嘉信(Schwab)接口同步：从浏览器会话取 Bearer token 后同源调用 `ausgateway` 交易接口，自动分页（末页不再返回游标即停止）。不给日期=全量；`history_id` 幂等，重跑覆盖不重复；接口无成交时间，统一记 `16:00:00`；需先 `opencli stock login` |
+| `opencli stock sync-schwab` | `[startDate] [endDate] [--account] [--account-id] [--dry-run] [--timeout]` | **美股数据唯一写入路径**。嘉信(Schwab)接口同步：从浏览器会话取 Bearer token 后同源调用 `ausgateway` 交易接口，自动分页（末页不再返回游标即停止）。买卖按 1 股拆分（金额/费用均摊，尾差落最后一条），现金流水不拆；不给日期=全量；`history_id` 幂等，重跑覆盖不重复；接口无成交时间，统一记 `16:00:00`；需先 `opencli stock login` |
 | `node match.js` | `[--db <path>]` | 匹配本地库中未配对的买卖记录（纯本地，`profit.js` 已内置此步，无需单独跑） |
 | `node profit.js` | `[startMonth] [endMonth] [--db <path>]` | 查询收益，月份格式 `YYYY-MM`；一个事务内先清理查询范围内 0 过户费的匹配记录，再全库重算配对（崩溃整体回滚）；输出含**币种列**（US→USD，其余 CNY，跨币种不可加总）；交易记录 0 过户费只统计提示（需 `opencli stock sync` 重拉修复）；纯本地 |
 | `node unmatched.js` | `[--code] [--name] [--op] [--start] [--end] [--account] [--all] [--db <path>]` | 查询未配对记录，默认与配对口径一致（op=1/2 且数量>0）；`--all` 含逆回购/派息等非买卖流水 |
@@ -140,7 +140,7 @@ cd ~/.agents/skills/stock-skill/scripts && node profit.js
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| history_id | VARCHAR | 主键；同花顺 sync 由「账户+时间戳+代码+方向+数量」生成，美股 `sync-schwab` 优先用接口 `schwabOrderId`，为 0 时回退「账户\|时间\|代码\|方向\|数量\|价格」SHA1 前 24 位（不要用 `itemIssueId`：它与证券绑定，同股成交共用一个 id） |
+| history_id | VARCHAR | 主键；同花顺 sync 由「账户+时间戳+代码+方向+数量」生成；美股 `sync-schwab` 买卖按 1 股拆分为「接口 `schwabOrderId`\|基础哈希 + `_股序号`」（qty=1 不加后缀），为 0 时回退「账户\|时间\|代码\|方向\|数量\|价格」SHA1 前 24 位（不要用 `itemIssueId`：它与证券绑定，同股成交共用一个 id） |
 | account_id | VARCHAR | 账户 ID |
 | account_name | VARCHAR | 账户名称 |
 | account_type | VARCHAR | 账户类型（美股 `sync-schwab` 固定 `US`） |
@@ -150,8 +150,8 @@ cd ~/.agents/skills/stock-skill/scripts && node profit.js
 | op | VARCHAR | 操作类型（'1'买入，'2'卖出；'5'/'35' 逆回购、'6' 派息、'95' 缴税、嘉信非买卖流水 '99' 等不参与配对） |
 | op_name | VARCHAR | 操作名称（仅参考，不可靠，判断方向一律用 `op`） |
 | entry_price | DECIMAL(10,4) | 成交价格 |
-| entry_count | INTEGER | 成交数量（美股按接口原样一条入库；现金流水为 0） |
-| entry_money | DECIMAL(10,4) | 成交金额（买卖均为含费净额） |
+| entry_count | INTEGER | 成交数量（美股买卖拆成 1 股一条；现金流水为 0） |
+| entry_money | DECIMAL(10,4) | 成交金额（买卖均为含费净额；美股拆股后为每股均摊，尾差在最后一条） |
 | entry_cost | DECIMAL(10,4) | 成本 |
 | fee_total | DECIMAL(10,4) | 费用合计 |
 | commission | DECIMAL(10,4) | 佣金（美股取接口 `feesAndCommission`，用户已定口径；`entry_money` 已含费，`netMoneyOf` 会再扣一次，美股卖单合计约 0.65 的已知误差） |

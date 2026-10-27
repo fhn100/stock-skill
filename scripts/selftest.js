@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 
-import { greedyMatch, netMoneyOf, matchMoneyOf } from "./business.js";
+import { lifoMatch, fifoMatch, psfMatch, netMoneyOf, matchMoneyOf } from "./business.js";
 import { OP } from "./constants.js";
 import { TRADE_COLUMNS, TRADE_RECORD_DDL, TRADE_MATCHED_DDL } from "./schema.js";
 import { monthRange, lastDayOfMonth, displayWidth, renderTable, maskAccountName } from "./utils.js";
@@ -30,47 +30,47 @@ const trade = (op, id, time, money, { count = 100, code = "600000", account = "A
   matchMoney: matchMoneyOf({ op, entry_money: money, transfer_fee: fee, commission }, true),
 });
 
-// ============================ 匹配算法 ============================
+// ============================ LIFO 匹配（后入先出，成交配对视图） ============================
 
-test("最短持有优先：同一卖出取时间最新且盈利的买入", () => {
+test("LIFO：同一卖出取时间最新且盈利的买入", () => {
   const buys = [
     trade(OP.BUY, "b1", "2026-01-01 10:00:00", 900),
     trade(OP.BUY, "b2", "2026-01-05 10:00:00", 950),
   ];
   const sells = [trade(OP.SELL, "s1", "2026-01-10 10:00:00", 1000)];
-  const pairs = greedyMatch(buys, sells);
+  const pairs = lifoMatch(buys, sells);
   assert.equal(pairs.length, 1);
   assert.equal(pairs[0].buy.history_id, "b2");
 });
 
-test("无盈利不配对", () => {
+test("LIFO：无盈利不配对", () => {
   const buys = [trade(OP.BUY, "b1", "2026-01-01 10:00:00", 1100)];
   const sells = [trade(OP.SELL, "s1", "2026-01-10 10:00:00", 1000)];
-  assert.equal(greedyMatch(buys, sells).length, 0);
+  assert.equal(lifoMatch(buys, sells).length, 0);
 });
 
-test("先卖后买不配对", () => {
+test("LIFO：先卖后买不配对", () => {
   const buys = [trade(OP.BUY, "b1", "2026-02-01 10:00:00", 900)];
   const sells = [trade(OP.SELL, "s1", "2026-01-10 10:00:00", 1000)];
-  assert.equal(greedyMatch(buys, sells).length, 0);
+  assert.equal(lifoMatch(buys, sells).length, 0);
 });
 
-test("同时间戳买卖可配对：history_id 不影响跨类型可用性", () => {
+test("LIFO：同时间戳买卖可配对：history_id 不影响跨类型可用性", () => {
   const buys = [trade(OP.BUY, "zzz", "2026-01-10 10:00:00", 900)];
   const sells = [trade(OP.SELL, "aaa", "2026-01-10 10:00:00", 1000)];
-  const pairs = greedyMatch(buys, sells);
+  const pairs = lifoMatch(buys, sells);
   assert.equal(pairs.length, 1);
   assert.equal(pairs[0].buy.history_id, "zzz");
 });
 
-test("分组隔离：代码/数量/账户不同均不互配", () => {
+test("LIFO：分组隔离：代码/数量/账户不同均不互配", () => {
   const buys = [
     trade(OP.BUY, "b1", "2026-01-01 10:00:00", 900, { code: "000001" }),
     trade(OP.BUY, "b2", "2026-01-01 10:00:00", 900, { count: 200 }),
     trade(OP.BUY, "b3", "2026-01-01 10:00:00", 900, { account: "B" }),
   ];
   const sells = [trade(OP.SELL, "s1", "2026-01-10 10:00:00", 1000)];
-  assert.equal(greedyMatch(buys, sells).length, 0);
+  assert.equal(lifoMatch(buys, sells).length, 0);
 });
 
 test("一笔买入只配一笔卖出", () => {
@@ -79,9 +79,120 @@ test("一笔买入只配一笔卖出", () => {
     trade(OP.SELL, "s1", "2026-01-10 10:00:00", 1000),
     trade(OP.SELL, "s2", "2026-01-11 10:00:00", 1000),
   ];
-  const pairs = greedyMatch(buys, sells);
+  const pairs = lifoMatch(buys, sells);
   assert.equal(pairs.length, 1);
   assert.equal(pairs[0].sell.history_id, "s1");
+});
+
+// ============================ FIFO 匹配（先入先出，盈亏计算视图） ============================
+
+test("FIFO：同一卖出取时间最早且盈利的买入", () => {
+  const buys = [
+    trade(OP.BUY, "b1", "2026-01-01 10:00:00", 900),
+    trade(OP.BUY, "b2", "2026-01-05 10:00:00", 950),
+  ];
+  const sells = [trade(OP.SELL, "s1", "2026-01-10 10:00:00", 1000)];
+  const pairs = fifoMatch(buys, sells);
+  assert.equal(pairs.length, 1);
+  assert.equal(pairs[0].buy.history_id, "b1");  // FIFO 取最早的买入
+});
+
+test("FIFO：无盈利不配对", () => {
+  const buys = [trade(OP.BUY, "b1", "2026-01-01 10:00:00", 1100)];
+  const sells = [trade(OP.SELL, "s1", "2026-01-10 10:00:00", 1000)];
+  assert.equal(fifoMatch(buys, sells).length, 0);
+});
+
+test("FIFO：先卖后买不配对", () => {
+  const buys = [trade(OP.BUY, "b1", "2026-02-01 10:00:00", 900)];
+  const sells = [trade(OP.SELL, "s1", "2026-01-10 10:00:00", 1000)];
+  assert.equal(fifoMatch(buys, sells).length, 0);
+});
+
+test("FIFO：多笔卖出按时间顺序依次配对最早可用买入", () => {
+  const buys = [
+    trade(OP.BUY, "b1", "2026-01-01 10:00:00", 900),
+    trade(OP.BUY, "b2", "2026-01-05 10:00:00", 950),
+  ];
+  const sells = [
+    trade(OP.SELL, "s1", "2026-01-10 10:00:00", 1000),  // 配 b1（最早）
+    trade(OP.SELL, "s2", "2026-01-11 10:00:00", 1050),  // 配 b2（b1 已用）
+  ];
+  const pairs = fifoMatch(buys, sells);
+  assert.equal(pairs.length, 2);
+  assert.equal(pairs[0].buy.history_id, "b1");
+  assert.equal(pairs[0].sell.history_id, "s1");
+  assert.equal(pairs[1].buy.history_id, "b2");
+  assert.equal(pairs[1].sell.history_id, "s2");
+});
+
+test("FIFO vs LIFO：同一场景配对结果不同", () => {
+  const buys = [
+    trade(OP.BUY, "b1", "2026-01-01 10:00:00", 900),
+    trade(OP.BUY, "b2", "2026-01-05 10:00:00", 950),
+  ];
+  const sells = [trade(OP.SELL, "s1", "2026-01-10 10:00:00", 1000)];
+  const lifoPairs = lifoMatch(buys, sells);
+  const fifoPairs = fifoMatch(buys, sells);
+  assert.equal(lifoPairs[0].buy.history_id, "b2");  // LIFO 取最新的
+  assert.equal(fifoPairs[0].buy.history_id, "b1");  // FIFO 取最早的
+});
+
+// ============================ PSF 匹配（价差最小优先，不限时间） ============================
+
+test("PSF：先卖后买可配对（不限时间）", () => {
+  const buys = [trade(OP.BUY, "b1", "2026-02-01 10:00:00", 900)];
+  const sells = [trade(OP.SELL, "s1", "2026-01-10 10:00:00", 1000)];
+  const pairs = psfMatch(buys, sells);
+  assert.equal(pairs.length, 1);
+  assert.equal(pairs[0].buy.history_id, "b1");
+  assert.equal(pairs[0].sell.history_id, "s1");
+});
+
+test("PSF：价差最小优先", () => {
+  const buys = [
+    trade(OP.BUY, "b1", "2026-01-01 10:00:00", 800),  // spread = 200
+    trade(OP.BUY, "b2", "2026-01-02 10:00:00", 950),  // spread = 50 (closest)
+  ];
+  const sells = [trade(OP.SELL, "s1", "2026-01-10 10:00:00", 1000)];
+  const pairs = psfMatch(buys, sells);
+  assert.equal(pairs.length, 1);
+  assert.equal(pairs[0].buy.history_id, "b2");  // should pick b2 (closest price)
+});
+
+test("PSF：无盈利不配对", () => {
+  const buys = [trade(OP.BUY, "b1", "2026-01-01 10:00:00", 1100)];
+  const sells = [trade(OP.SELL, "s1", "2026-01-10 10:00:00", 1000)];
+  assert.equal(psfMatch(buys, sells).length, 0);
+});
+
+test("PSF：每条记录只能匹配一次", () => {
+  const buys = [trade(OP.BUY, "b1", "2026-01-01 10:00:00", 900)];
+  const sells = [
+    trade(OP.SELL, "s1", "2026-01-10 10:00:00", 1000),
+    trade(OP.SELL, "s2", "2026-01-11 10:00:00", 1000),
+  ];
+  const pairs = psfMatch(buys, sells);
+  assert.equal(pairs.length, 1);  // only one pair, b1 used once
+});
+
+test("PSF：多买多卖按价差贪心匹配", () => {
+  const buys = [
+    trade(OP.BUY, "b1", "2026-01-01 10:00:00", 900),
+    trade(OP.BUY, "b2", "2026-01-02 10:00:00", 950),
+  ];
+  const sells = [
+    trade(OP.SELL, "s1", "2026-01-10 10:00:00", 1000),  // best match: b2 (spread 50)
+    trade(OP.SELL, "s2", "2026-01-11 10:00:00", 1050),  // best match: b1 (spread 150) after b2 used
+  ];
+  const pairs = psfMatch(buys, sells);
+  assert.equal(pairs.length, 2);
+  // s1 should match b2 (smallest spread 50)
+  const s1Pair = pairs.find(p => p.sell.history_id === "s1");
+  assert.equal(s1Pair.buy.history_id, "b2");
+  // s2 should match b1 (only remaining)
+  const s2Pair = pairs.find(p => p.sell.history_id === "s2");
+  assert.equal(s2Pair.buy.history_id, "b1");
 });
 
 // ============================ 净额口径 ============================
@@ -260,7 +371,7 @@ test("normalizeSchwabTrade：schwabOrderId 做主键、卖出净额入 entry_mon
   assert.equal(record.op, OP.SELL);
   assert.equal(record.code, "TSLA");
   assert.equal(record.entry_date_time, "2026-10-22 16:00:00"); // 接口无成交时间，统一按收盘时间
-  assert.equal(record.entry_count, 3); // 不拆股：接口一条 = 库里一条
+  assert.equal(record.entry_count, 3); // normalize 保留整笔；1 股拆分由 splitSchwabShares 负责
   assert.equal(record.entry_price, 387);
   assert.equal(record.entry_money, 1160.97); // amount 已是扣费后净额，整笔金额不除以数量
   // 主键 = 券商订单号；itemIssueId 与证券绑定、同股全部成交共用，不能当主键
@@ -315,6 +426,48 @@ test("normalizeSchwabTrade：schwabOrderId 做主键、卖出净额入 entry_mon
   );
 });
 
+test("splitSchwabShares：qty>1 按 1 股拆分，主键加序号、金额与费用均摊且合计不变", { skip: schwabSkip }, () => {
+  const ctx = { accountId: "US-c0e4a175de", accountName: "嘉信-冯", selectedAccountId: "10301685" };
+  const { record } = schwab.normalizeSchwabTrade({
+    transactionDate: "10/22/2026", action: "Sell", symbol: "TSLA", schwabOrderId: "123456789",
+    shareQuantity: "3", executionPrice: "$387.00", feesAndCommission: "$0.01", amount: "$1160.97",
+  }, ctx);
+  const parts = schwab.splitSchwabShares(record);
+  assert.equal(parts.length, 3);
+  assert.deepEqual(parts.map((x) => x.history_id), ["123456789_1", "123456789_2", "123456789_3"]);
+  for (const p of parts) {
+    assert.equal(p.entry_count, 1);
+    assert.equal(p.entry_price, 387);
+    assert.equal(p.entry_money, 386.99);
+    assert.equal(p.entry_cost, 386.99);
+  }
+  const sumMoney = schwab.round4(parts.reduce((s, x) => s + x.entry_money, 0));
+  const sumFee = schwab.round4(parts.reduce((s, x) => s + x.commission, 0));
+  assert.equal(sumMoney, 1160.97); // 尾差落在最后一条，拆分前后合计一致
+  assert.equal(sumFee, 0.01);
+  assert.deepEqual(parts.map((x) => x.commission), [0.0033, 0.0033, 0.0034]);
+
+  // 无订单号的旧成交：基础哈希 + 序号（基础键按整笔 qty=N 生成，重跑稳定）
+  const { record: old } = schwab.normalizeSchwabTrade({
+    transactionDate: "10/22/2026", action: "Buy", symbol: "TSLA",
+    shareQuantity: "2", executionPrice: "$300.00", amount: "$600.00",
+  }, ctx);
+  const oldParts = schwab.splitSchwabShares(old);
+  assert.equal(oldParts.length, 2);
+  assert.deepEqual(oldParts.map((x) => x.history_id), [`${old.history_id}_1`, `${old.history_id}_2`]);
+
+  // qty=1 不加序号；现金流水不拆
+  const { record: one } = schwab.normalizeSchwabTrade({
+    transactionDate: "10/22/2026", action: "Buy", symbol: "TSLA", schwabOrderId: "555",
+    shareQuantity: "1", executionPrice: "$300.00", amount: "$300.00",
+  }, ctx);
+  assert.equal(schwab.splitSchwabShares(one)[0].history_id, "555");
+  const cash = schwab.normalizeSchwabTrade(
+    { transactionDate: "09/29/2026", action: "Margin Interest", amount: "-$15.93" }, ctx).record;
+  assert.equal(schwab.splitSchwabShares(cash).length, 1);
+  assert.equal(schwab.splitSchwabShares(cash)[0].history_id, cash.history_id);
+});
+
 test("dedupeHistoryIds：同键重复 → base + x02，不多不少", { skip: schwabSkip }, () => {
   const id = "aaaa1111bbbb2222cccc3333";
   const recs = [{ history_id: id }, { history_id: id }, { history_id: "distinct000000000000" }];
@@ -323,4 +476,44 @@ test("dedupeHistoryIds：同键重复 → base + x02，不多不少", { skip: sc
   assert.equal(new Set(ids).size, 3);
   assert.ok(ids.includes(id));
   assert.ok(ids.some((x) => x.endsWith("x02")));
+});
+
+test("dedupeHistoryIds：拆股键去重保留 _序号 后缀", { skip: schwabSkip }, () => {
+  const recs = [{ history_id: "123456789_1" }, { history_id: "123456789_1" }];
+  schwab.dedupeHistoryIds(recs);
+  assert.deepEqual(recs.map((x) => x.history_id), ["123456789_1", "123456789_1x02"]);
+});
+
+test("dropShadowSchwabTrades：订单号时有时无导致的同内容双键只保留一种", { skip: schwabSkip }, () => {
+  const ctx = { accountId: "US-c0e4a175de", accountName: "嘉信-冯", selectedAccountId: "10301685" };
+  const base = {
+    transactionDate: "02/10/2026", action: "Sell", symbol: "TSLA",
+    shareQuantity: "1", executionPrice: "$425.00", amount: "$425.00", feesAndCommission: "",
+  };
+  const withOrder = { ...schwab.normalizeSchwabTrade({ ...base, schwabOrderId: "1005383223451" }, ctx).record, history_id: "1005383223451" };
+  const withHash = schwab.normalizeSchwabTrade({ ...base, schwabOrderId: "0" }, ctx).record; // 内容同、键为哈希
+
+  // 库中已有订单号键：本次接口给哈希键 → 跳过，不新增第二条
+  let out = schwab.dropShadowSchwabTrades([withHash], [withOrder]);
+  assert.equal(out.records.length, 0);
+  assert.equal(out.skipped, 1);
+
+  // 库中只有哈希键：本次给订单号键 → 也跳过，避免同一笔出现两种键（收益翻倍）
+  out = schwab.dropShadowSchwabTrades([withOrder], [withHash]);
+  assert.equal(out.records.length, 0);
+  assert.equal(out.skipped, 1);
+
+  // 同一批里两种键并存：保留订单号键
+  out = schwab.dropShadowSchwabTrades([withHash, withOrder], []);
+  assert.equal(out.records.length, 1);
+  assert.equal(out.records[0].history_id, "1005383223451");
+
+  // 同一种键的重复内容（同日同价多笔独立委托）照常保留
+  const twoOrders = {
+    ...schwab.normalizeSchwabTrade({ ...base, schwabOrderId: "200" }, ctx).record,
+    history_id: "200",
+  };
+  out = schwab.dropShadowSchwabTrades([withOrder, twoOrders], []);
+  assert.equal(out.records.length, 2);
+  assert.equal(out.skipped, 0);
 });

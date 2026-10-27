@@ -31,7 +31,8 @@ export const TRADE_MATCHED_DDL = `CREATE TABLE IF NOT EXISTS ${TABLE.TRADE_MATCH
     sell_entry_count INTEGER, buy_entry_count INTEGER, sell_entry_money DECIMAL(10,4),
     buy_entry_money DECIMAL(10,4), sell_transfer_fee DECIMAL(10,4), buy_transfer_fee DECIMAL(10,4),
     profit DECIMAL(12,4), sell_time TIMESTAMP, buy_time TIMESTAMP,
-    sell_history_id VARCHAR, buy_history_id VARCHAR, PRIMARY KEY(sell_history_id, buy_history_id))`;
+    sell_history_id VARCHAR, buy_history_id VARCHAR, match_type VARCHAR,
+    PRIMARY KEY(sell_history_id, buy_history_id, match_type))`;
 
 export const TRADE_INDEX_DDL = [
   `CREATE INDEX IF NOT EXISTS idx_trade_op_date ON ${TABLE.TRADE_RECORD}(op, entry_date)`,

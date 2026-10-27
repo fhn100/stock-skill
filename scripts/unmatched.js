@@ -15,7 +15,7 @@
 
 import { withDb, extractDbFlag } from "./db.js";
 import { TABLE, OP, opLabel } from "./constants.js";
-import { NOT_MATCHED_JOIN, MATCHABLE_COND } from "./sql-match.js";
+import { notMatchedJoin, MATCHABLE_COND } from "./sql-match.js";
 import { maskAccountName, fmtDate, getDefaultDateRange, renderTable } from "./utils.js";
 
 // ============================ 参数解析 ============================
@@ -78,12 +78,12 @@ function printUsage() {
 
 // ============================ 主逻辑 ============================
 
-/** 交易记录中未出现在匹配表中的记录 */
+/** 交易记录中未出现在匹配表中的记录（不被任何算法匹配） */
 async function queryUnmatched(db, { filters, params, cond, fields }) {
   return await db.all(`
     SELECT ${fields}
     FROM ${TABLE.TRADE_RECORD} t
-    ${NOT_MATCHED_JOIN}
+    ${notMatchedJoin()}
       AND ${cond}
       ${filters}
     ORDER BY t.entry_date DESC, t.entry_time DESC
@@ -126,7 +126,7 @@ async function main() {
       : Number((await db.all(`
           SELECT count(*) AS n
           FROM ${TABLE.TRADE_RECORD} t
-          ${NOT_MATCHED_JOIN}
+          ${notMatchedJoin()}
             AND NOT (${MATCHABLE_COND.replace(/\n\s*/g, " ")})
             ${filters}
         `, params))[0]?.n ?? 0);

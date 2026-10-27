@@ -6,8 +6,8 @@
 import { withDb } from "./db.js";
 import { TABLE, OP, INSERT_BATCH_SIZE } from "./constants.js";
 import { pad2 } from "./utils.js";
-import { GRID_PROFIT } from "./sql-profit.js";
-import { LOAD_UNMATCHED_TRADES, MATCHED_COLUMNS } from "./sql-match.js";
+import { gridProfitSQL } from "./sql-profit.js";
+import { loadUnmatchedTrades, MATCHED_COLUMNS } from "./sql-match.js";
 
 /**
  * 批量插入匹配结果（分批拼接 VALUES，避免单条语句参数过多）
@@ -79,17 +79,17 @@ export function matchMoneyOf(t, netFilter) {
 }
 
 /**
- * 最短持有匹配（时间差最小优先，LIFO）
+ * LIFO 匹配（后入先出，最短持有优先）
+ * 用于成交配对视图，帮助用户直观查看网格交易的实际配对情况，评估网格运行的健康度。
  * 每组 (account_id, code, entry_count) 内独立匹配：
  * 卖出按时间升序处理，可用买入 = 未匹配且 time <= 卖出时间的买入；
- * 每次配对取买入时间最新（卖出时间 - 买入时间差最小）且盈利
- * （matchMoney < 卖出 matchMoney）的买入。
+ * 每次配对取买入时间最新（卖出时间 - 买入时间差最小）且盈利的买入。
  *
  * @param {Array} buys - 未匹配买入记录
  * @param {Array} sells - 未匹配卖出记录
  * @returns {Array<{buy: Object, sell: Object}>} 匹配对
  */
-export function greedyMatch(buys, sells) {
+export function lifoMatch(buys, sells) {
   const buyGroups = groupBy(buys, groupKey);
   const pairs = [];
 
@@ -110,6 +110,101 @@ export function greedyMatch(buys, sells) {
           pairs.push({ buy: avail.splice(i, 1)[0], sell });
           break;
         }
+      }
+    }
+  }
+  return pairs;
+}
+
+/**
+ * FIFO 匹配（先入先出，最长持有优先）
+ * 用于盈亏计算视图，基于先入先出原则为客户提供网格逐笔盈亏计算服务。
+ * 撇除股票持仓的自然盈亏，仅统计网格增益部分，可有效帮助客户衡量网格交易策略的实际运行效益。
+ * 每组 (account_id, code, entry_count) 内独立匹配：
+ * 卖出按时间升序处理，可用买入 = 未匹配且 time <= 卖出时间的买入；
+ * 每次配对取买入时间最早（即最先买入的）且盈利的买入。
+ *
+ * @param {Array} buys - 未匹配买入记录
+ * @param {Array} sells - 未匹配卖出记录
+ * @returns {Array<{buy: Object, sell: Object}>} 匹配对
+ */
+export function fifoMatch(buys, sells) {
+  const buyGroups = groupBy(buys, groupKey);
+  const pairs = [];
+
+  for (const [key, gSells] of groupBy(sells, groupKey)) {
+    const gBuys = buyGroups.get(key);
+    if (!gBuys) continue;
+
+    gBuys.sort(byTime);
+    gSells.sort(byTime);
+
+    const avail = [];
+    let bi = 0;
+    for (const sell of gSells) {
+      while (bi < gBuys.length && gBuys[bi].entry_ts.getTime() <= sell.entry_ts.getTime()) avail.push(gBuys[bi++]);
+      // 从可用买入里取时间最早（即 avail 头部正向扫描）且盈利的买入
+      for (let i = 0; i < avail.length; i++) {
+        if (avail[i].matchMoney < sell.matchMoney) {
+          pairs.push({ buy: avail.splice(i, 1)[0], sell });
+          break;
+        }
+      }
+    }
+  }
+  return pairs;
+}
+
+/**
+ * PSF 匹配（Price Smallest First，价差最小优先，不限时间）
+ * 每组 (account_id, code, entry_count) 内独立匹配：
+ * 卖出价必须高于买入价，取价差最小的配对，每条记录只能用一次。
+ *
+ * @param {Array} buys - 未匹配买入记录
+ * @param {Array} sells - 未匹配卖出记录
+ * @returns {Array<{buy: Object, sell: Object}>} 匹配对
+ */
+export function psfMatch(buys, sells) {
+  const buyGroups = groupBy(buys, groupKey);
+  const pairs = [];
+
+  for (const [key, gSells] of groupBy(sells, groupKey)) {
+    const gBuys = buyGroups.get(key);
+    if (!gBuys) continue;
+
+    // 构建所有可能的配对及其价差
+    const candidates = [];
+    const usedBuys = new Set();
+    const usedSells = new Set();
+
+    for (const sell of gSells) {
+      for (const buy of gBuys) {
+        // 卖出价必须高于买入价（用 matchMoney 比较，净额或毛额口径）
+        if (sell.matchMoney > buy.matchMoney) {
+          candidates.push({
+            buy,
+            sell,
+            spread: sell.matchMoney - buy.matchMoney,
+          });
+        }
+      }
+    }
+
+    // 按价差升序排序，价差相同则按时间差排序（保持确定性）
+    candidates.sort((a, b) =>
+      a.spread - b.spread ||
+      a.sell.entry_ts.getTime() - b.sell.entry_ts.getTime() ||
+      a.buy.history_id.localeCompare(b.buy.history_id)
+    );
+
+    // 贪心选取：每条记录只能用一次
+    for (const candidate of candidates) {
+      const buyKey = candidate.buy.history_id;
+      const sellKey = candidate.sell.history_id;
+      if (!usedBuys.has(buyKey) && !usedSells.has(sellKey)) {
+        pairs.push({ buy: candidate.buy, sell: candidate.sell });
+        usedBuys.add(buyKey);
+        usedSells.add(sellKey);
       }
     }
   }
@@ -154,19 +249,24 @@ function summarizeUnmatched(unBuys, unSells, allBuys, allSells) {
 }
 
 /**
- * 匹配交易记录（最短持有 / 时间差最小，单遍完成，无需迭代）
- * 对全库所有未匹配记录重算配对，不受调用方查询月份范围限制
+ * 匹配交易记录
  * @param {Object} [opts]
  * @param {boolean} [opts.netFilter=true] - 盈利判定用净额还是毛额
  *   true：买入净成本 < 卖出净所得（真实盈利，与 profit 一致）
  *   false：买入毛额 < 卖出毛额（覆盖更多对，但部分对 net profit 可能为负）
+ * @param {string} [opts.strategy='lifo'] - 匹配策略
+ *   'lifo'：后入先出（最短持有优先，用于成交配对视图），默认
+ *   'fifo'：先入先出（最长持有优先，用于盈亏计算视图）
+ *   'psf'：价差最小优先（Price Smallest First，不限时间）
+ * @param {string} [opts.matchType] - 匹配算法标识，写入 match_type 字段；不传则取 strategy 值
  * @returns {Promise<{matched:number, unmatchedBuy:number, unmatchedSell:number,
  *   summary:{sellNoBuy:number, sellNoProfit:number, buyNoSell:number, buyNoProfit:number}}>}
  *   匹配结果统计（渲染交由调用方，业务层不直接打印）
  */
-export async function tradeMatch({ netFilter = true } = {}) {
+export async function tradeMatch({ netFilter = true, strategy = 'lifo', matchType } = {}) {
+  const type = matchType || strategy;
   return await withDb(async (db) => {
-    const trades = (await db.all(LOAD_UNMATCHED_TRADES)).map((t) => ({
+    const trades = (await db.all(loadUnmatchedTrades(type))).map((t) => ({
       ...t,
       // DuckDBTimestampValue {micros} → JS Date（epoch 毫秒）
       entry_ts: new Date(Number(t.entry_ts.micros / 1000n)),
@@ -176,7 +276,9 @@ export async function tradeMatch({ netFilter = true } = {}) {
     const buys = trades.filter((t) => t.op === OP.BUY);
     const sells = trades.filter((t) => t.op === OP.SELL);
 
-    const pairs = greedyMatch(buys, sells);
+    // 按策略选择匹配算法
+    const matchFn = strategy === 'fifo' ? fifoMatch : strategy === 'psf' ? psfMatch : lifoMatch;
+    const pairs = matchFn(buys, sells);
 
     const insertRows = pairs.map(({ buy, sell }) => [
       buy.account_id, buy.account_name,
@@ -190,6 +292,7 @@ export async function tradeMatch({ netFilter = true } = {}) {
       sell.netMoney - buy.netMoney,
       fmtDateTime(sell.entry_ts), fmtDateTime(buy.entry_ts),
       sell.history_id, buy.history_id,
+      type,
     ]);
     await batchInsertMatched(db, insertRows);
 
@@ -219,15 +322,17 @@ function fmtDateTime(d) {
  * 查询网格收益（个股/月/年三层）
  * @param {string} startMonth - 开始月份 YYYY-MM
  * @param {string} endMonth - 结束月份 YYYY-MM
+ * @param {string} [matchType='lifo'] - 匹配算法标识
  * @returns {Promise<Array>} 结果行
  */
-export async function gridProfit(startMonth, endMonth) {
-  // GRID_PROFIT 里的 ? 按 SQL 文本顺序位置绑定，改动 SQL 占位符时务必同步这里：
+export async function gridProfit(startMonth, endMonth, matchType = 'lifo') {
+  const sql = gridProfitSQL(matchType);
+  // sql 里的 ? 按文本顺序位置绑定：
   //   1. year CTE   `strftime(sell_time,'%Y-%m') <= ?`        → endMonth
   //   2. 外层 WHERE `t.sell_date >= ?`                         → startMonth
   //   3. 外层 WHERE `t.sell_date <= ?`                         → endMonth
   //   4. 外层 WHERE `substr(?,1,4)`（year 行按年匹配）          → startMonth 的年份
   return await withDb(async (db) =>
-    await db.all(GRID_PROFIT, [endMonth, startMonth, endMonth, startMonth.substring(0, 4)]),
+    await db.all(sql, [endMonth, startMonth, endMonth, startMonth.substring(0, 4)]),
   );
 }

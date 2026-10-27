@@ -14,8 +14,11 @@ import { TABLE, MARKET } from "./constants.js";
  * 3. year — 年汇总（按 account_id, account_name, 年份 分组，取该年最大月份）
  *
  * 最终合并排序，输出脱敏的账户名。
+ * 
+ * @param {string} matchType - 匹配算法标识（lifo/fifo/psf）
  */
-export const GRID_PROFIT = `
+export function gridProfitSQL(matchType) {
+  return `
 WITH cur AS (
   SELECT account_id,
     CASE WHEN BOOL_OR(market_code = '${MARKET.US}') THEN 'USD' ELSE 'CNY' END AS currency
@@ -34,6 +37,7 @@ stock AS (
     CAST(sum(profit) AS DOUBLE) AS total_profit,
     'stock' AS row_type
   FROM ${TABLE.TRADE_MATCHED}
+  WHERE match_type = '${matchType}'
   GROUP BY account_id, account_name, sell_date, code
 ),
 month AS (
@@ -48,6 +52,7 @@ month AS (
     CAST(sum(profit) AS DOUBLE) AS total_profit,
     'month' AS row_type
   FROM ${TABLE.TRADE_MATCHED}
+  WHERE match_type = '${matchType}'
   GROUP BY account_id, account_name, sell_date
 ),
 year AS (
@@ -62,7 +67,8 @@ year AS (
     CAST(sum(profit) AS DOUBLE) AS total_profit,
     'year' AS row_type
   FROM ${TABLE.TRADE_MATCHED}
-  WHERE strftime(sell_time, '%Y-%m') <= ?
+  WHERE match_type = '${matchType}'
+    AND strftime(sell_time, '%Y-%m') <= ?
   GROUP BY account_id, account_name, strftime(sell_time, '%Y')
 )
 SELECT
@@ -96,3 +102,4 @@ ORDER BY
   END,
   t.total_profit DESC
 `;
+}

@@ -2,8 +2,9 @@
 
 /**
  * 独立收益查询脚本 - 不依赖 opencli
- * 用法: node profit.js [startMonth] [endMonth] [--db <path>]
+ * 用法: node profit.js [startMonth] [endMonth] [--db <path>] [--strategy lifo|fifo|psf]
  * 月份格式: YYYY-MM，默认当月；--db 为 STOCK_DB_OVERRIDE 的命令行糖（隔离测试用）
+ * --strategy 匹配策略：lifo=后入先出（默认），fifo=先入先出，psf=价差最小优先
  */
 
 import { tradeMatch, gridProfit } from "./business.js";
@@ -12,7 +13,22 @@ import { withDb, extractDbFlag } from "./db.js";
 import { TABLE, MARKET } from "./constants.js";
 
 // 解析命令行参数（先剥离 --db，其余为位置参数）
-const args = extractDbFlag(process.argv.slice(2));
+const rawArgs = process.argv.slice(2);
+const args = extractDbFlag(rawArgs);
+
+// 解析 --strategy 参数
+let strategy = 'lifo';
+const strategyIdx = args.indexOf('--strategy');
+if (strategyIdx !== -1 && args[strategyIdx + 1]) {
+  strategy = args[strategyIdx + 1];
+  if (!['lifo', 'fifo', 'psf'].includes(strategy)) {
+    console.error(`错误: --strategy 必须是 lifo/fifo/psf，当前: ${strategy}`);
+    process.exit(1);
+  }
+  // 从位置参数中移除 --strategy 及其值
+  args.splice(strategyIdx, 2);
+}
+
 const start = args[0] || getCurrentMonth();
 const end = args[1] || start;
 
@@ -91,8 +107,8 @@ try {
   let matchStats;
   try {
     await cleanDirtyFees(start, end);
-    // 匹配交易记录（先买后卖，仅盈利；对全库未匹配记录重算）
-    matchStats = await tradeMatch();
+    // 匹配交易记录（对全库未匹配记录重算）
+    matchStats = await tradeMatch({ strategy });
     await withDb(async (db) => db.run("COMMIT"));
   } catch (e) {
     await withDb(async (db) => db.run("ROLLBACK")).catch(() => {});
@@ -101,7 +117,7 @@ try {
 
   console.log(`查询范围：${start} ~ ${end}`);
   console.log(renderMatchStats(matchStats));
-  printProfit(await gridProfit(start, end));
+  printProfit(await gridProfit(start, end, strategy));
 } catch (e) {
   console.error("查询网格收益失败:", e.message);
   process.exit(1);

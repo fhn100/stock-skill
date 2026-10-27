@@ -22,8 +22,8 @@ category: finance
 | 交易记录同步 | `opencli stock sync [start] [end]` | **只管同花顺（A 股/港股）**，美股走下面的 `sync-schwab`。复用浏览器登录态（策略 COOKIE）拉取数据；需先在浏览器登录 `https://tzzb.10jqka.com.cn/pc/index.html`。建表 + 同步账户字典 + 交易记录，日期格式 `YYYYMMDD`（默认当月）；自动分页、幂等 |
 | 嘉信美股接口同步 | `opencli stock sync-schwab [start] [end] [--account 嘉信-冯] [--account-id 10301685] [--dry-run]` | **美股数据唯一写入路径**（独立命令，`sync` 不再接受任何嘉信参数）。走 `ausgateway.schwab.com` 交易接口拉嘉信(Schwab)成交并写 `t_trade_record`；**须先 `opencli stock login`**。不给日期=全量（接口 `timeFrame=All`，本地按区间过滤）；`history_id` 沿用库中既有美股记录的同一公式（`CSV\|` 前缀是历史命名，CSV 导入脚本已移除），重跑覆盖不重复 |
 | 仅初始化表结构 | `opencli stock init-db` | 只建表建索引（sync 启动时已自动执行） |
-| 交易记录匹配 | `node match.js` | 匹配本地库中未配对的买入/卖出（纯本地，不联网） |
-| 收益统计 | `node profit.js [startMonth] [endMonth]` | 查询网格收益，月份格式 `YYYY-MM`；年收益 = 年初至截止月累计。执行时在一个事务内先清理**查询范围内** 0 过户费的匹配记录、再调用与 `match.js` 相同的 `tradeMatch()` 重算配对（崩溃则整体回滚，不会留下"删了未重配"的不一致）；0 过户费的交易记录只统计提示，需 `opencli stock sync` 重拉修复。输出含**币种列**（嘉信等 `market_code='US'` 账户标 USD，其余 CNY，跨账户不可加总）；纯本地，不联网 |
+| 交易记录匹配 | `node match.js [--strategy lifo\|fifo\|psf\|all]` | 匹配本地库中未配对的买入/卖出（纯本地，不联网）。默认 `all`=三种算法都跑；`lifo`=后入先出（成交配对视图）；`fifo`=先入先出（盈亏计算视图）；`psf`=价差最小优先（不限时间）。匹配结果写入 `match_type` 字段区分 |
+| 收益统计 | `node profit.js [startMonth] [endMonth] [--strategy lifo\|fifo\|psf]` | 查询网格收益，月份格式 `YYYY-MM`；年收益 = 年初至截止月累计。执行时在一个事务内先清理**查询范围内** 0 过户费的匹配记录、再调用与 `match.js` 相同的 `tradeMatch()` 重算配对（崩溃则整体回滚，不会留下"删了未重配"的不一致）；匹配策略同 `match.js`，默认 `lifo`。0 过户费的交易记录只统计提示，需 `opencli stock sync` 重拉修复。输出含**币种列**（嘉信等 `market_code='US'` 账户标 USD，其余 CNY，跨账户不可加总）；纯本地，不联网 |
 | 未匹配查询 | `node unmatched.js [--code] [--name] [--op] [--start] [--end] [--account] [--all]` | 默认只列可配对记录（op=1/2 且数量>0），与 `match.js` 口径一致；`--all` 含逆回购/派息等非买卖流水 |
 | 纯函数自测 | `node --test selftest.js` | 校验匹配算法、净额口径、嘉信同步纯函数与 `history_id` 主键守卫、日期与表格工具、schema 漂移守卫（不碰数据库） |
 | 钱路集成测试 | `node --test inttest.js` | 临时 DuckDB 库跑通 `tradeMatch` 落库 + `gridProfit` 聚合，校验收益金额、币种与 SQL 参数绑定 |
@@ -131,7 +131,7 @@ opencli stock login
 # 步骤2：先 dry-run 看解析量，确认无误再写库（只读，不动真实数据）
 opencli stock sync-schwab 20261001 20261031 --dry-run
 
-# 步骤3：正式同步。不给日期 = 全量（约 2 页/4 年，实测约 294 条，含现金流水）
+# 步骤3：正式同步。不给日期 = 全量（约 2 页/4 年，实测接口 294 条 → 拆股后 323 条入库）
 opencli stock sync-schwab
 
 # 步骤4：配对 + 收益（美股与 A 股同一套）
@@ -140,10 +140,11 @@ cd ~/.agents/skills/stock-skill/scripts && node profit.js
 
 **接口同步语义（勿改，改了会重复计收益）：**
 - **鉴权复用浏览器会话**：先打开 `client.schwab.com/app/accounts/summary`，从浏览器发出的 `ausgateway.schwab.com` 请求头里取 `Bearer` token，再把标签页导航到 ausgateway 源页面**同源**调用交易接口（跨源 fetch 会被 CORS 拦掉）。token 只在本次进程内存中使用，**本地不落任何凭证**；报 `AUTH_REQUIRED` 就重跑 `opencli stock login`。
-- **`history_id` 主键口径（2026-10-27 起）**：成交记录直接用接口的 `schwabOrderId` 做主键；`schwabOrderId` 为 0/缺失的记录（嘉信系统里的老交易、Margin/Credit Interest 等现金流水）回退到 `sha1("CSV|账户|时间|代码|方向|数量|价格").hex` 前 24 位。**两条路都不可改**：换主键口径 = 同一批记录生成新键、与旧行并存、收益翻倍，而本技能没有删除能力，只能手工清库挽救。`selftest.js` 用哈希金值（`c89fb934437da3f7da870c4a`）守住回退公式这条线。库里美股记录已按此口径重写（拆股时代 qty=1 哈希旧记录已清除，备份 `stock.db.bak-20261027-pre-us-cleanup` / `-pre-orderid` / `-pre-issueid-fix`）。
+- **`history_id` 主键口径（2026-10-27 起）**：美股买卖按 1 股拆分后，每条以 `schwabOrderId_序号` 为主键（如 `1007298688974_1` / `_2` / `_3`，序号从 1 起）；qty=1 的记录不加后缀，仍是裸 `schwabOrderId`。`schwabOrderId` 为 0/缺失的记录（嘉信老交易、Margin/Credit Interest、MoneyLink Transfer 等）回退到 `sha1("CSV|账户|时间|代码|方向|数量|价格").hex` 前 24 位作基础键，拆分时同样追加 `_序号`。**基础键公式都不可改**：换主键口径 = 同一批记录生成新键、与旧行并存、收益翻倍，而本技能没有删除能力，只能手工清库挽救。`selftest.js` 用哈希金值（`c89fb934437da3f7da870c4a`）守住回退公式这条线。库里美股记录已按此口径重写（备份 `stock.db.bak-20261027-pre-us-cleanup` / `-pre-orderid` / `-pre-issueid-fix` / `-pre-split`）。
   - **不要用 `itemIssueId` 当主键**（2026-10-27 实测否决）：它跟证券绑定而非逐笔订单，同一只 TSLA 的所有成交共用 `1948561409`，当主键会让同股全部成交挤在一个 base 键上、靠顺序分配 `x02` 区分，新增成交即整体错位覆盖。`selftest.js` 有一条守卫用例钉住这个结论。
   - MoneyLink Transfer 等流水日期带后缀（`"10/03/2025 as of 10/02/2025"`），`parseSchwabDate` 取前段交易日；这类流水无订单号，走哈希回退。
-- **按接口原样一条入库**（不拆股：qty=N 就 `entry_count=N`，`entry_money` 取整笔净额 amount）、`market_code='US'`、无 `symbol` 的现金流水 code 记空串照常入库（op=6/18/19/99，含 MoneyLink Transfer，不参与买卖配对）、同主键重复（现金流水可能同日同参数）追加 `x02` 序号防冲突。
+  - **接口的 `schwabOrderId` 偶发时有时无**（实测 2026-10-27：2026-02-10 一笔 TSLA 卖出 1 股 @425 在多次拉取间 `1005383223451` / `"0"` 交替）。`sync-schwab` 写入前按内容签名（时间+代码+方向+数量+价格+金额）去重：同签名下若库里只有另一种键，跳过本次写入；同一种键的重复内容照常保留（同日同价的多笔独立委托）。不这样做重跑会为同一笔生成订单号键 + 哈希键两条、收益翻倍。
+- **买卖成交按 1 股拆分入库**：接口一条 qty=N → 库里 N 条 `entry_count=1`，`entry_money/entry_cost/commission/fee_total` 按股均摊（除不尽的尾差落在最后一条，拆分前后合计不变），`entry_price` 保持每股成交价。配对脚本按 1 股粒度匹配，整笔 qty>1 会配不上。现金流水（op=6/18/19/99，含 MoneyLink Transfer，无 `symbol` 时 code 记空串）不拆、不参与买卖配对。同主键重复（现金流水可能同日同参数）追加 `x02` 序号防冲突；拆股键的去重标记追加在 `_序号` 之后（`123_1x02`），不截断后缀。
 - **金额口径（已定）**：`entry_money` 取接口 `amount`——它**已是扣费后的净额**（卖出实收、买入实付）；`commission/fee_total` 记接口 `feesAndCommission`（用户拍板的口径）。已知并接受：`netMoneyOf` 会在净额基础上再减一次 `commission`，美股卖单合计约 0.65 的重复扣费，属口径内误差。
 - 接口响应**没有任何成交时间**，统一记 `entry_time='16:00:00'`（美股收盘近似），保证同日顺序确定、跨机器 `history_id` 稳定。
 - 接口日期参数只验证过 `timeFrame=All`（`Last30Days` 等取值会 400），所以时间区间一律**本地过滤**；降序返回，一旦早于 `--start` 即停止翻页。
@@ -190,10 +191,13 @@ FROM t_trade_record WHERE entry_date = current_date ORDER BY entry_time
 | 项目 | 值 |
 |------|---|
 | 交易记录表 | `t_trade_record` |
-| 匹配记录表 | `t_trade_matched_record` |
+| 匹配记录表 | `t_trade_matched_record`（含 `match_type` 字段：lifo/fifo/psf） |
 | 数据库索引 | `idx_trade_op_date`(op,entry_date), `idx_trade_code`, `idx_matched_sell_history`, `idx_matched_sell_time` 等 |
 | op 码 | `1`=买入、`2`=卖出（仅此两者参与配对）；`5`/`35`=逆回购买卖（代码 131810 R-001、204001 GC001）、`6`=派息、`95`=缴税、`18`/`86`=转入、`19`/`87`=转出、`222`=入账、`235`/`236`=0 成本入账类买卖（⚠️ 始终用 `op` 数字字段，`op_name` 不可靠） |
 | 配对范围 | 仅同账户 + 同代码 + 同成交数量可互配，不做数量拆分；逆回购/派息等不参与配对 |
+| 匹配策略（默认 lifo） | **后入先出（LIFO，最短持有优先）**：用于成交配对视图，帮助用户直观查看网格交易的实际配对情况，评估网格运行的健康度。卖出按时间升序处理，可用买入 = 未匹配且 time ≤ 卖出时间的买入；每次取时间最新且盈利的买入配对 |
+| 匹配策略（fifo） | **先入先出（FIFO，最长持有优先）**：用于盈亏计算视图，基于先入先出原则为客户提供网格逐笔盈亏计算服务。撇除股票持仓的自然盈亏，仅统计网格增益部分。卖出按时间升序处理，可用买入 = 未匹配且 time ≤ 卖出时间的买入；每次取时间最早且盈利的买入配对 |
+| 匹配策略（psf） | **价差最小优先（PSF，Price Smallest First）**：不限买卖时间顺序，卖出价必须高于买入价，取价差最小的配对；每条记录只能匹配一次。配对数最多但可能包含跨期配对 |
 
 ## 注意事项
 
