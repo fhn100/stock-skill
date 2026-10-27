@@ -216,8 +216,8 @@ const schwab = await import(new URL("../resources/stock/sync.js", import.meta.ur
   .catch(() => null);
 const schwabSkip = schwab ? false : "未能加载 resources/stock/sync.js（先在 resources/stock 下 npm install）";
 
-// 2026-10-21 TSLA 卖出 1 股 @390：真实库里的既有主键，公式一改就会生成新键、
-// 与旧记录并存导致收益翻倍，所以这几个值是回归红线，不是随手写的样例。
+// 2026-10-21 TSLA 卖出 1 股 @390：历史 CSV 导入时代的既有主键。公式本身是回归红线——
+// 一改就会为同一批成交生成新键、与旧记录并存导致收益翻倍，所以这几个值不是随手写的样例。
 const GOLDEN_SELL_1_390 = "c89fb934437da3f7da870c4a";
 
 test("history_id 与 account_id 公式未漂移（与库中既有美股记录同一主键）", { skip: schwabSkip }, () => {
@@ -228,12 +228,14 @@ test("history_id 与 account_id 公式未漂移（与库中既有美股记录同
   assert.equal(schwab.schwabAccountId("嘉信-冯"), "US-c0e4a175de");
 });
 
-test("parseSchwabMoney 处理 $千分位、负号、括号；parseSchwabDate 只认美式日期", { skip: schwabSkip }, () => {
+test("parseSchwabMoney 处理 $千分位、负号、括号；parseSchwabDate 兼容 as-of 后缀", { skip: schwabSkip }, () => {
   assert.equal(schwab.parseSchwabMoney("$1,234.56"), 1234.56);
   assert.equal(schwab.parseSchwabMoney("-$370.00"), -370);
   assert.equal(schwab.parseSchwabMoney("(1,234.56)"), -1234.56);
   assert.ok(Number.isNaN(schwab.parseSchwabMoney("")));
   assert.equal(schwab.parseSchwabDate("10/23/2026"), "2026-10-23");
+  // MoneyLink 转账：接口给 "10/03/2025 as of 10/02/2025"，取前面的交易日
+  assert.equal(schwab.parseSchwabDate("10/03/2025 as of 10/02/2025"), "2025-10-03");
   assert.equal(schwab.parseSchwabDate("2026-10-23"), null);
 });
 
@@ -247,37 +249,70 @@ test("mapSchwabAction：买卖→1/2，派息→6，出入金→18/19，其它�
   assert.equal(schwab.mapSchwabAction(""), null);
 });
 
-test("normalizeSchwabTrade：卖出净额入 entry_money、美股无过户费、现金流水跳过", { skip: schwabSkip }, () => {
+test("normalizeSchwabTrade：schwabOrderId 做主键、卖出净额入 entry_money、现金流水回退哈希", { skip: schwabSkip }, () => {
   const ctx = { accountId: "US-c0e4a175de", accountName: "嘉信-冯", selectedAccountId: "10301685" };
   const { record, warning } = schwab.normalizeSchwabTrade({
     transactionDate: "10/22/2026", action: "Sell", symbol: "tsla", description: "TESLA INC",
-    shareQuantity: "1", executionPrice: "$387.00", feesAndCommission: "$0.01", amount: "$386.99",
+    itemIssueId: "987654321", schwabOrderId: "123456789", shareQuantity: "3", executionPrice: "$387.00",
+    feesAndCommission: "$0.01", amount: "$1160.97",
   }, ctx);
   assert.equal(warning, null);
   assert.equal(record.op, OP.SELL);
   assert.equal(record.code, "TSLA");
   assert.equal(record.entry_date_time, "2026-10-22 16:00:00"); // 接口无成交时间，统一按收盘时间
-  assert.equal(record.entry_money, 386.99); // amount 已是扣费后净额
+  assert.equal(record.entry_count, 3); // 不拆股：接口一条 = 库里一条
+  assert.equal(record.entry_price, 387);
+  assert.equal(record.entry_money, 1160.97); // amount 已是扣费后净额，整笔金额不除以数量
+  // 主键 = 券商订单号；itemIssueId 与证券绑定、同股全部成交共用，不能当主键
+  assert.equal(record.history_id, "123456789");
+  assert.equal(record.commission, 0.01); // 费用 = feesAndCommission（用户已定口径）
   assert.equal(record.transfer_fee, 0);
   assert.equal(record.market_code, "US");
   assert.equal(record.account_id, "US-c0e4a175de");
 
+  // schwabOrderId 为 0 / 缺失：回退 CSV| 哈希公式（现金流水的红线）
   const cash = schwab.normalizeSchwabTrade(
     { transactionDate: "09/29/2026", action: "Margin Interest", symbol: "", amount: "-$15.93" }, ctx);
-  assert.equal(cash.record, null);
-  assert.match(cash.warning, /无证券代码/);
-});
+  assert.ok(cash.record, "无 symbol 的现金流水应入库而不是跳过");
+  assert.equal(cash.record.code, "");
+  assert.equal(cash.record.op, "99");
+  assert.equal(cash.record.entry_count, 0);
+  assert.equal(cash.record.entry_money, 15.93);
+  assert.equal(cash.record.name, "Margin Interest");
+  assert.equal(
+    cash.record.history_id,
+    schwab.stableHistoryId("嘉信-冯", "2026-09-29 16:00:00", "", "99", 0, 0),
+  );
 
-test("splitToShares：qty=3 → 3 条 1 股，共用 base 主键、金额守恒；qty=1 原样", { skip: schwabSkip }, () => {
-  const r = { account_name: "嘉信-冯", entry_date_time: "2026-10-21 16:00:00", code: "TSLA", op: OP.SELL,
-    entry_count: 3, entry_price: 390, entry_money: 779.98, entry_cost: 779.98, commission: 0 };
-  const out = schwab.splitToShares(r);
-  assert.equal(out.length, 3);
-  assert.ok(out.every((x) => x.entry_count === 1 && x.entry_price === 390));
-  assert.equal(new Set(out.map((x) => x.history_id)).size, 1);
-  assert.equal(out[0].history_id, GOLDEN_SELL_1_390);
-  assert.ok(Math.abs(out.reduce((s, x) => s + x.entry_money, 0) - 779.98) < 0.005);
-  assert.deepEqual(schwab.splitToShares({ ...r, entry_count: 1 }), [{ ...r, entry_count: 1 }]);
+  // MoneyLink 转账：as-of 日期可解析、无代码、无订单号 → 照常入库并回退哈希
+  const moneylink = schwab.normalizeSchwabTrade({
+    transactionDate: "10/03/2025 as of 10/02/2025", action: "MoneyLink Transfer",
+    itemIssueId: "0", amount: "-$2,000.00", description: "FUNDS TRANSFER",
+  }, ctx);
+  assert.ok(moneylink.record, "MoneyLink Transfer 应入库");
+  assert.equal(moneylink.record.entry_date, "2025-10-03");
+  assert.equal(moneylink.record.entry_money, 2000);
+  assert.equal(moneylink.warning, null); // 已知现金流水不报「未知交易类型」
+
+  // 只有 itemIssueId、没有订单号 → 必须回退哈希（防止有人再拿 itemIssueId 当主键）
+  const issueOnly = schwab.normalizeSchwabTrade({
+    transactionDate: "10/22/2026", action: "Sell", symbol: "TSLA",
+    itemIssueId: "1948561409", shareQuantity: "1", executionPrice: "$387.00", amount: "$386.99",
+  }, ctx);
+  assert.notEqual(issueOnly.record.history_id, "1948561409");
+  assert.equal(
+    issueOnly.record.history_id,
+    schwab.stableHistoryId("嘉信-冯", "2026-10-22 16:00:00", "TSLA", OP.SELL, 1, 387),
+  );
+
+  const zeroOrder = schwab.normalizeSchwabTrade({
+    transactionDate: "10/22/2026", action: "Sell", symbol: "TSLA",
+    schwabOrderId: "0", shareQuantity: "1", executionPrice: "$387.00", amount: "$386.99",
+  }, ctx);
+  assert.equal(
+    zeroOrder.record.history_id,
+    schwab.stableHistoryId("嘉信-冯", "2026-10-22 16:00:00", "TSLA", OP.SELL, 1, 387),
+  );
 });
 
 test("dedupeHistoryIds：同键重复 → base + x02，不多不少", { skip: schwabSkip }, () => {

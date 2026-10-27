@@ -131,7 +131,7 @@ opencli stock login
 # 步骤2：先 dry-run 看解析量，确认无误再写库（只读，不动真实数据）
 opencli stock sync-schwab 20261001 20261031 --dry-run
 
-# 步骤3：正式同步。不给日期 = 全量（约 2 页/4 年，实测 290 条流水）
+# 步骤3：正式同步。不给日期 = 全量（约 2 页/4 年，实测约 294 条，含现金流水）
 opencli stock sync-schwab
 
 # 步骤4：配对 + 收益（美股与 A 股同一套）
@@ -140,9 +140,11 @@ cd ~/.agents/skills/stock-skill/scripts && node profit.js
 
 **接口同步语义（勿改，改了会重复计收益）：**
 - **鉴权复用浏览器会话**：先打开 `client.schwab.com/app/accounts/summary`，从浏览器发出的 `ausgateway.schwab.com` 请求头里取 `Bearer` token，再把标签页导航到 ausgateway 源页面**同源**调用交易接口（跨源 fetch 会被 CORS 拦掉）。token 只在本次进程内存中使用，**本地不落任何凭证**；报 `AUTH_REQUIRED` 就重跑 `opencli stock login`。
-- **`history_id` 公式不可改**：`sha1("CSV|账户|时间|代码|方向|数量|价格").hex` 前 24 位（`CSV|` 前缀是历史命名，导出 CSV 的入库脚本已移除，库中既有 305 条美股记录全部按此生成）。改公式 = 同一批成交生成新主键，与旧记录并存、收益翻倍，而本技能没有删除能力，只能手工清库挽救。`selftest.js` 用主键金值守住这条线。
-- **默认按 1 股拆分**（qty=N → N 条 `entry_count=1`，`entry_money` 按 N 均分 round4）、`market_code='US'`、无 `symbol` 的现金流水（Margin Interest / 出入金等）跳过并告警、同日同参数重复成交追加 `x02` 序号防主键冲突。
-- **金额口径**：`entry_money` 取接口 `amount`——它**已是扣费后的净额**（卖出实收、买入实付）。注意 `netMoneyOf` 还会在此基础上再减 `commission`，而接口同步会把 `feesAndCommission`（嘉信美股多为 0.01~0.02）写入 `commission`，因此逐笔约有一次 0.01~0.02 的重复扣费；这与旧 CSV 导入（`commission` 恒 0）不同，属**待用户决策的口径分歧**，未经确认不要擅自改代码或改文档。好消息：`commission` 不进 `history_id`，改代码后重跑 `sync-schwab` 就会按同一主键覆盖旧行，不需要清库。
+- **`history_id` 主键口径（2026-10-27 起）**：成交记录直接用接口的 `schwabOrderId` 做主键；`schwabOrderId` 为 0/缺失的记录（嘉信系统里的老交易、Margin/Credit Interest 等现金流水）回退到 `sha1("CSV|账户|时间|代码|方向|数量|价格").hex` 前 24 位。**两条路都不可改**：换主键口径 = 同一批记录生成新键、与旧行并存、收益翻倍，而本技能没有删除能力，只能手工清库挽救。`selftest.js` 用哈希金值（`c89fb934437da3f7da870c4a`）守住回退公式这条线。库里美股记录已按此口径重写（拆股时代 qty=1 哈希旧记录已清除，备份 `stock.db.bak-20261027-pre-us-cleanup` / `-pre-orderid` / `-pre-issueid-fix`）。
+  - **不要用 `itemIssueId` 当主键**（2026-10-27 实测否决）：它跟证券绑定而非逐笔订单，同一只 TSLA 的所有成交共用 `1948561409`，当主键会让同股全部成交挤在一个 base 键上、靠顺序分配 `x02` 区分，新增成交即整体错位覆盖。`selftest.js` 有一条守卫用例钉住这个结论。
+  - MoneyLink Transfer 等流水日期带后缀（`"10/03/2025 as of 10/02/2025"`），`parseSchwabDate` 取前段交易日；这类流水无订单号，走哈希回退。
+- **按接口原样一条入库**（不拆股：qty=N 就 `entry_count=N`，`entry_money` 取整笔净额 amount）、`market_code='US'`、无 `symbol` 的现金流水 code 记空串照常入库（op=6/18/19/99，含 MoneyLink Transfer，不参与买卖配对）、同主键重复（现金流水可能同日同参数）追加 `x02` 序号防冲突。
+- **金额口径（已定）**：`entry_money` 取接口 `amount`——它**已是扣费后的净额**（卖出实收、买入实付）；`commission/fee_total` 记接口 `feesAndCommission`（用户拍板的口径）。已知并接受：`netMoneyOf` 会在净额基础上再减一次 `commission`，美股卖单合计约 0.65 的重复扣费，属口径内误差。
 - 接口响应**没有任何成交时间**，统一记 `entry_time='16:00:00'`（美股收盘近似），保证同日顺序确定、跨机器 `history_id` 稳定。
 - 接口日期参数只验证过 `timeFrame=All`（`Last30Days` 等取值会 400），所以时间区间一律**本地过滤**；降序返回，一旦早于 `--start` 即停止翻页。
 - `--account` 必须与既有数据一致（默认 `嘉信-冯`）：`account_id` 由账户名派生（`US-<sha1 前 10 位>` = `US-c0e4a175de`），改名等于换一个账户，会与历史数据并存成两套。

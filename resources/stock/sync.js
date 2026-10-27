@@ -454,8 +454,12 @@ function parseSchwabMoney(value) {
 }
 
 /** M/D/YYYY（嘉信）→ YYYY-MM-DD；无法解析返回 null */
+/**
+ * 接口日期 "MM/DD/YYYY" → "YYYY-MM-DD"。
+ * MoneyLink 转账等流水带后缀："10/03/2025 as of 10/02/2025"，取前面那个交易日。
+ */
 function parseSchwabDate(raw) {
-  const m = String(raw ?? "").trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  const m = String(raw ?? "").trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+as of\s+.*)?$/i);
   if (!m) return null;
   const [, mm, dd, yyyy] = m;
   return `${yyyy}-${pad2(Number(mm))}-${pad2(Number(dd))}`;
@@ -477,17 +481,35 @@ function mapSchwabAction(actionRaw) {
   return OP_US.OTHER;
 }
 
+/** 已知的现金流水动作（无订单号、不参与配对）：照常入库，但不报「未知交易类型」 */
+const SCHWAB_KNOWN_CASH_ACTION = /^(moneylink transfer|margin interest|credit interest|service fee|foreign\s?tax)/i;
+
 /**
- * 稳定 history_id。`CSV|` 前缀是历史包袱（源自早先的嘉信 CSV 导入），库里全部既有美股
- * 记录都按这个公式生成 —— **不要改公式**：改了会为同一批成交生成新主键，
- * 与旧记录并存、收益翻倍，而且本技能没有删除能力，只能靠手工清库挽救。
+ * 回退用稳定 history_id（`CSV|` 前缀是历史包袱，源自早先的嘉信 CSV 导入）。
+ * 成交记录的主键已改用券商订单号 schwabOrderId，这个哈希公式只服务**无订单号**的
+ * 现金流水（出入金/利息等，schwabOrderId 为 0）—— 同样不要改公式：改了会为同一批
+ * 流水生成新主键，与旧记录并存，而且本技能没有删除能力，只能靠手工清库挽救。
  */
 function stableHistoryId(account, entryDateTime, code, op, qty, price) {
   const raw = `CSV|${account}|${entryDateTime}|${code}|${op}|${qty}|${round4(price)}`;
   return createHash("sha1").update(raw).digest("hex").slice(0, 24);
 }
 
-/** 同日同参数重复成交：追加出现序号，避免主键互相覆盖 */
+/**
+ * 主键取值：成交记录优先用接口 schwabOrderId（逐笔订单号，跨重跑天然幂等）。
+ * 不要用 itemIssueId：实测它跟证券绑定（同一只 TSLA 的所有成交共用 1948561409），
+ * 拿它当主键会让同股全部成交挤在一个 base 键上、靠顺序分配的 x02 区分，
+ * 新增成交即整体错位覆盖。
+ * schwabOrderId 为 0/缺失的记录（老交易、现金流水）回退哈希公式。
+ */
+function schwabHistoryId(item, ctx, entryDateTime, code, op, qty, price) {
+  const orderId = String(item.schwabOrderId ?? "").trim();
+  return orderId && orderId !== "0"
+    ? orderId
+    : stableHistoryId(ctx.accountName, entryDateTime, code, op, qty, price);
+}
+
+/** 同主键重复（现金流水可能同日同参数；订单号理论唯一）：追加出现序号，避免互相覆盖 */
 function dedupeHistoryIds(records) {
   const seen = new Map();
   for (const r of records) {
@@ -496,19 +518,6 @@ function dedupeHistoryIds(records) {
     if (n > 1) r.history_id = `${r.history_id.slice(0, 22)}x${pad2(n)}`;
   }
   return records;
-}
-
-/** 成交按 1 股拆成多条（配对脚本按 1 股粒度匹配） */
-function splitToShares(r) {
-  const n = r.entry_count;
-  if (!(n > 1)) return [r];
-  const perShare = round4(r.entry_money / n);
-  const base = stableHistoryId(r.account_name, r.entry_date_time, r.code, r.op, 1, r.entry_price);
-  const out = [];
-  for (let k = 0; k < n; k += 1) {
-    out.push({ ...r, entry_count: 1, entry_money: perShare, entry_cost: perShare, history_id: base });
-  }
-  return out;
 }
 
 /** 账户 id 由账户名派生，跨机器稳定；换账户名等于另起一套记录，勿随意改 --account */
@@ -523,9 +532,9 @@ function normalizeSchwabTrade(item, ctx) {
   if (!date) return { record: null, warning: `日期无法解析: "${item.transactionDate}" ${item.action || ""}`, date: null };
 
   const action = String(item.action || "").trim();
+  // 现金类流水（出入金/利息/手续费）没有 symbol：code 记空串照样入库，
+  // op 为 6/18/19/99 本就不参与买卖配对，仅作账户流水留痕
   const symbol = String(item.symbol || "").trim().toUpperCase();
-  // 嘉信的利息/出入金等现金流水没有 symbol，无法进入配对，跳过并告警
-  if (!symbol) return { record: null, warning: `${date} ${action || "未知类型"}: 无证券代码（现金类流水），跳过`, date };
 
   const op = mapSchwabAction(action);
   if (!op) return { record: null, warning: `${date}: 缺少交易类型，跳过`, date };
@@ -554,6 +563,9 @@ function normalizeSchwabTrade(item, ctx) {
     amount = round4(amount || price * qty);
   }
 
+  // 交易费用口径（用户已定）：commission/fee_total 记接口 feesAndCommission。
+  // 注意接口 amount 已是扣费后净额，profit 的 netMoneyOf 会再减一次 commission
+  // （卖单合计约 0.65），属已知且接受的口径。
   let fees = Math.abs(parseSchwabMoney(item.feesAndCommission));
   if (Number.isNaN(fees)) fees = Math.abs(parseSchwabMoney(item.transactionDetail?.commission));
   if (Number.isNaN(fees)) fees = 0;
@@ -573,16 +585,18 @@ function normalizeSchwabTrade(item, ctx) {
       entry_time: SCHWAB_ENTRY_TIME,
       entry_date_time: entryDateTime,
       fee_total: round4(fees),
-      history_id: stableHistoryId(ctx.accountName, entryDateTime, symbol, op, qty, price),
+      history_id: schwabHistoryId(item, ctx, entryDateTime, symbol, op, qty, price),
       manual_id: ctx.selectedAccountId,
       market_code: MARKET_US,
-      name: String(item.description || "").trim() || symbol,
+      name: String(item.description || "").trim() || symbol || action, // 现金流水无代码时记动作名
       oid: 0,
       op,
       op_name: action || op,
       transfer_fee: 0, // 美股无过户费
     },
-    warning: op === OP_US.OTHER ? `未知交易类型 "${action}"（按不参与配对的流水入库）` : null,
+    warning: op === OP_US.OTHER && !SCHWAB_KNOWN_CASH_ACTION.test(action)
+      ? `未知交易类型 "${action}"（按不参与配对的流水入库）`
+      : null,
     date,
   };
 }
@@ -721,8 +735,7 @@ async function fetchSchwabRecords(page, { auth, selectedAccountId, accountName, 
         outOfRange = true;
         continue;
       }
-      if (record.op === OP_US.BUY || record.op === OP_US.SELL) records.push(...splitToShares(record));
-      else records.push(record);
+      records.push(record);
     }
 
     // 末页不再返回游标；游标与本次请求相同则说明没有前进（防死循环）
@@ -796,7 +809,7 @@ async function syncSchwab(page, kwargs) {
 /** 纯函数导出，供 scripts/selftest.js 做主键与金额口径回归（导入即注册命令，但不写库、不联网） */
 export const schwabPure = {
   round4, parseSchwabMoney, parseSchwabDate, mapSchwabAction,
-  stableHistoryId, dedupeHistoryIds, splitToShares, normalizeSchwabTrade, schwabAccountId,
+  stableHistoryId, schwabHistoryId, dedupeHistoryIds, normalizeSchwabTrade, schwabAccountId,
 };
 
 // ============================ 命令 ============================

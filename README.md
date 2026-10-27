@@ -5,7 +5,7 @@
 ## 功能
 
 - 🔄 **数据同步**：`opencli stock sync` 复用浏览器登录态，自动分页同步同花顺账户与交易记录（接口在浏览器上下文内发起，token/Cookie 不落盘，幂等）
-- 🇺🇸 **嘉信接口同步**：`opencli stock sync-schwab`（先 `opencli stock login`）直连 `ausgateway.schwab.com` 交易接口拉美股成交，**美股数据的唯一写入路径**；默认按 1 股拆分、`history_id` 幂等，重跑覆盖不重复
+- 🇺🇸 **嘉信接口同步**：`opencli stock sync-schwab`（先 `opencli stock login`）直连 `ausgateway.schwab.com` 交易接口拉美股成交，**美股数据的唯一写入路径**；按接口原样一条入库（含无代码的现金流水），`history_id` 幂等，重跑覆盖不重复
 - 🔗 **交易匹配**：自动匹配买卖记录（最短持有优先，仅盈利配对）
 - 💰 **收益统计**：查询网格收益（含币种列，美股/A 股分列不可跨币种加总）
 - 🔍 **未匹配排查**：查询未配对的买卖记录
@@ -103,7 +103,7 @@ opencli stock sync-schwab                               # 全量同步（无日�
 cd ~/.agents/skills/stock-skill/scripts && node profit.js
 ```
 
-`history_id` 由「账户|时间|代码|方向|数量|价格」SHA1 生成（前缀 `CSV|` 是历史命名，导出 CSV 的入库脚本已移除），同主键 INSERT OR REPLACE 覆盖，重跑与历史数据互不重复。
+`history_id` 主键：美股成交用接口的 `schwabOrderId`；`schwabOrderId` 为 0 的记录（老交易与现金流水）回退「账户|时间|代码|方向|数量|价格」SHA1 前 24 位（前缀 `CSV|` 是历史命名）。**不要用 `itemIssueId`**——实测它跟证券绑定（同一只股票的所有成交共用一个 id），当主键会让同股成交互相挤占覆盖。同主键 INSERT OR REPLACE 覆盖，重跑与历史数据互不重复。
 
 ## 命令参考
 
@@ -140,7 +140,7 @@ cd ~/.agents/skills/stock-skill/scripts && node profit.js
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| history_id | VARCHAR | 主键；同花顺 sync 由「账户+时间戳+代码+方向+数量」生成，美股 `sync-schwab` 由「账户\|时间\|代码\|方向\|数量\|价格」SHA1 前 24 位生成（`CSV|` 为历史命名） |
+| history_id | VARCHAR | 主键；同花顺 sync 由「账户+时间戳+代码+方向+数量」生成，美股 `sync-schwab` 优先用接口 `schwabOrderId`，为 0 时回退「账户\|时间\|代码\|方向\|数量\|价格」SHA1 前 24 位（不要用 `itemIssueId`：它与证券绑定，同股成交共用一个 id） |
 | account_id | VARCHAR | 账户 ID |
 | account_name | VARCHAR | 账户名称 |
 | account_type | VARCHAR | 账户类型（美股 `sync-schwab` 固定 `US`） |
@@ -150,11 +150,11 @@ cd ~/.agents/skills/stock-skill/scripts && node profit.js
 | op | VARCHAR | 操作类型（'1'买入，'2'卖出；'5'/'35' 逆回购、'6' 派息、'95' 缴税、嘉信非买卖流水 '99' 等不参与配对） |
 | op_name | VARCHAR | 操作名称（仅参考，不可靠，判断方向一律用 `op`） |
 | entry_price | DECIMAL(10,4) | 成交价格 |
-| entry_count | INTEGER | 成交数量（美股按 1 股拆分入库） |
+| entry_count | INTEGER | 成交数量（美股按接口原样一条入库；现金流水为 0） |
 | entry_money | DECIMAL(10,4) | 成交金额（买卖均为含费净额） |
 | entry_cost | DECIMAL(10,4) | 成本 |
 | fee_total | DECIMAL(10,4) | 费用合计 |
-| commission | DECIMAL(10,4) | 佣金（美股取接口 `feesAndCommission`；`entry_money` 已含费，此处再计会被 `netMoneyOf` 重复扣 0.01~0.02/笔，口径待定） |
+| commission | DECIMAL(10,4) | 佣金（美股取接口 `feesAndCommission`，用户已定口径；`entry_money` 已含费，`netMoneyOf` 会再扣一次，美股卖单合计约 0.65 的已知误差） |
 | transfer_fee | DECIMAL(10,4) | 过户费（美股恒 0） |
 | entry_date | VARCHAR | 成交日期 |
 | entry_time | VARCHAR | 成交时间 |

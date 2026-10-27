@@ -257,43 +257,45 @@ async function elementViewportCenter(page, index, selector) {
 }
 
 /**
- * 向 ctx 内输入框输入文本（优先 CDP 原生 insertText；
- * 回退 Angular 兼容的 value setter + input 事件），并回读校验。
+ * 向 ctx 内输入框输入文本（先清空残留，再优先 CDP 原生 insertText；
+ * 回退 Angular/React 兼容的 value setter + input/change 事件），并回读校验。
+ * 修复：原实现不清空残留，insertText 追加导致 12 位码误判为填写失败。
  */
 async function typeIntoSelector(page, ctx, selector, text) {
   const sel = JSON.stringify(selector);
-  await evalIn(
-    page,
-    ctx,
-    `(() => {
-      const el = document.querySelector(${sel});
-      if (!el) throw new Error('元素不存在: ' + ${sel});
-      el.focus();
-      el.click();
-      return true;
-    })()`,
-  );
-  try {
-    await page.cdp("Input.insertText", { text: String(text) });
-  } catch {
-    await evalIn(
-      page,
-      ctx,
-      `(() => {
-        const el = document.querySelector(${sel});
-        const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-        Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, ${JSON.stringify(String(text))});
-        el.dispatchEvent(new Event('input', { bubbles: true }));
-        el.dispatchEvent(new Event('change', { bubbles: true }));
-        return true;
-      })()`,
-    );
+  const textS = String(text);
+  const protoExpr = "(el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype)";
+  const buildSetScript = (valueJson) => `(() => {
+    const el = document.querySelector(${sel});
+    if (!el) throw new Error('元素不存在: ' + ${sel});
+    el.focus();
+    Object.getOwnPropertyDescriptor(${protoExpr}, 'value').set.call(el, ${valueJson});
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  })()`;
+  const readScript = `(() => { const el = document.querySelector(${sel}); return el ? String(el.value || '') : null; })()`;
+  // 1) 聚焦 + 清空残留（native setter 对受控组件有效）
+  await evalIn(page, ctx, buildSetScript("''"));
+  let cur = null;
+  try { cur = await evalIn(page, ctx, readScript); } catch { cur = null; }
+  if (cur === "") {
+    // 确认已清空：优先 CDP 原生 insertText
+    try {
+      await page.cdp("Input.insertText", { text: textS });
+    } catch {
+      await evalIn(page, ctx, buildSetScript(JSON.stringify(textS)));
+    }
+  } else {
+    // 残留未清掉（受控组件复原）或读不回：native setter 整值覆写
+    await evalIn(page, ctx, buildSetScript(JSON.stringify(textS)));
   }
   let back = "";
   try {
-    back = String(await evalIn(page, ctx, `(() => (document.querySelector(${sel}) || {}).value || '')()`)) || "";
+    const r = await evalIn(page, ctx, `(() => (document.querySelector(${sel}) || {}).value || '')()`);
+    back = String(r ?? "");
   } catch { /* ignore */ }
-  return { ok: back === String(text), actual: back };
+  return { ok: back === textS, actual: back };
 }
 
 /** 在 ctx 内点击元素（优先原生坐标点击，回退 JS click） */
