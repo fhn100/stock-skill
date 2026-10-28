@@ -3,7 +3,7 @@
 /**
  * 独立匹配脚本 - 不依赖 opencli
  * 用法: node match.js [--db <path>] [--strategy lifo|fifo|psf|all]
- * 只对本地库中未匹配的买卖记录做配对；同步新交易记录请先执行 `opencli stock sync`
+ * 只对本地库中未匹配的买卖记录做配对；同步新交易记录请先执行 `opencli stock sync-tzzb`
  * --db 为 STOCK_DB_OVERRIDE 的命令行糖（隔离测试用，默认 ~/.duckdb/stock/stock.db）
  * --strategy 匹配策略：lifo=后入先出，fifo=先入先出，psf=价差最小优先，all=三种都跑（默认）
  */

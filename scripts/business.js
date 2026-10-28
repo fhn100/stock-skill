@@ -1,6 +1,6 @@
 /**
  * 业务逻辑层
- * 交易匹配与收益查询（数据同步由 opencli stock sync 负责，本目录不联网）
+ * 交易匹配与收益查询（数据同步由 opencli stock sync-tzzb 负责，本目录不联网）
  */
 
 import { withDb } from "./db.js";

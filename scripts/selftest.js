@@ -283,7 +283,7 @@ function parseColumnNames(ddl) {
     .map((p) => p.split(/\s+/)[0].replace(/^"(.*)"$/, "$1"));
 }
 
-/** 提取 sync.js 源码里各 CREATE TABLE 的列名，按占位符 TABLE.XXX 归类 */
+/** 提取 sync-common.js 源码里各 CREATE TABLE 的列名，按占位符 TABLE.XXX 归类 */
 function parseSyncTables(src) {
   const out = {};
   for (const idx of [...src.matchAll(/CREATE TABLE IF NOT EXISTS/g)].map((m) => m.index)) {
@@ -297,8 +297,8 @@ function parseSyncTables(src) {
 const sorted = (arr) => [...arr].sort();
 const sameSet = (a, b) => JSON.stringify(sorted(a)) === JSON.stringify(sorted(b));
 
-test("schema.js 与 sync.js 建表列集合一致（漂移守卫）", () => {
-  const syncPath = path.join(import.meta.dirname, "..", "resources", "stock", "sync.js");
+test("schema.js 与 sync-common.js 建表列集合一致（漂移守卫）", () => {
+  const syncPath = path.join(import.meta.dirname, "..", "resources", "stock", "sync-common.js");
   const syncTables = parseSyncTables(fs.readFileSync(syncPath, "utf8"));
 
   const schemaTrade = parseColumnNames(TRADE_RECORD_DDL);
@@ -320,12 +320,12 @@ test("schema.js TRADE_COLUMNS 与建表列集合一致", () => {
 
 /**
  * 美股交易记录唯一的写入路径是 opencli stock sync-schwab，被测逻辑就在插件脚本
- * resources/stock/sync.js 里（导出的 schwabPure）。插件依赖未安装时跳过，不拖累其它用例。
+ * resources/stock/sync-schwab.js 里（导出的 schwabPure）。插件依赖未安装时跳过，不拖累其它用例。
  */
-const schwab = await import(new URL("../resources/stock/sync.js", import.meta.url).href)
+const schwab = await import(new URL("../resources/stock/sync-schwab.js", import.meta.url).href)
   .then((m) => m.schwabPure)
   .catch(() => null);
-const schwabSkip = schwab ? false : "未能加载 resources/stock/sync.js（先在 resources/stock 下 npm install）";
+const schwabSkip = schwab ? false : "未能加载 resources/stock/sync-schwab.js（先在 resources/stock 下 npm install）";
 
 // 2026-10-21 TSLA 卖出 1 股 @390：历史 CSV 导入时代的既有主键。公式本身是回归红线——
 // 一改就会为同一批成交生成新键、与旧记录并存导致收益翻倍，所以这几个值不是随手写的样例。

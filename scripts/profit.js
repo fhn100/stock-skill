@@ -41,7 +41,7 @@ const NOT_US_ACCOUNT = `account_id IS NULL OR account_id NOT IN (SELECT account_
 /**
  * 清理脏数据（过户费=0 的旧快照）：
  * - 匹配记录：清理【查询月份范围】内的记录 → tradeMatch 会用交易表的最新费用重新配对（安全）
- * - 交易记录：本脚本不再同步数据，删除后无法重拉，只统计并提示用 `opencli stock sync` 修复
+ * - 交易记录：本脚本不再同步数据，删除后无法重拉，只统计并提示用 `opencli stock sync-tzzb` 修复
  * - 美股账户（sync-schwab 同步）过户费恒为 0，已排除，不做清理也不计入口径提示
  * @param {string} start - 查询起始月 YYYY-MM
  * @param {string} end - 查询结束月 YYYY-MM
@@ -65,7 +65,7 @@ async function cleanDirtyFees(start, end) {
       console.log(`已清理查询范围匹配记录（过户费=0）[${range}]: ${matchedCount} 条`);
     }
 
-    // 2) 交易记录：只提示不删（需 opencli stock sync 重拉才能修复费用）
+    // 2) 交易记录：只提示不删（需 opencli stock sync-tzzb 重拉才能修复费用）
     const tradeCount = Number((await db.all(
       `SELECT count(*) AS n FROM ${TABLE.TRADE_RECORD}
         WHERE transfer_fee = 0 AND market_code IS DISTINCT FROM '${MARKET.US}'
@@ -74,7 +74,7 @@ async function cleanDirtyFees(start, end) {
     if (tradeCount > 0) {
       const lastMonth = months[months.length - 1];
       console.log(`⚠️  查询范围内 ${tradeCount} 条交易记录过户费=0（未自动清理）；如需修复费用，执行: `
-        + `opencli stock sync ${months[0].replace("-", "")}01 `
+        + `opencli stock sync-tzzb ${months[0].replace("-", "")}01 `
         + `${lastMonth.replace("-", "")}${lastDayOfMonth(lastMonth)} 后重跑本脚本`);
     }
   });

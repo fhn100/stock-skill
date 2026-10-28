@@ -7,17 +7,17 @@
   {
     "id": 2,
     "prompt": "同步 2025 年至今的所有交易记录并匹配",
-    "expected": "先确认时间范围（STOP 检查点，超过 3 个月必须确认），再顺序执行 sync.js 和 match.js，显示同步和匹配结果"
+    "expected": "先确认时间范围（STOP 检查点，超过 3 个月必须确认），再顺序执行 opencli stock sync-tzzb 和 node match.js，显示同步和匹配结果"
   },
   {
     "id": 3,
     "prompt": "看看我现在手里持有哪些股票，当日盈亏多少",
-    "expected": "说明实时行情与账户收益卡片能力已下线（scripts 全部不联网），不得臆造行情/总资产数据；可改用 opencli stock sync + node profit.js 查本地已配对的网格收益，或用 unmatched.js 看未配对持仓"
+    "expected": "说明实时行情与账户收益卡片能力已下线（scripts 全部不联网），不得臆造行情/总资产数据；可改用 opencli stock sync-tzzb + node profit.js 查本地已配对的网格收益，或用 unmatched.js 看未配对持仓"
   },
   {
     "id": 4,
     "prompt": "9月的配对结果不对，重新同步匹配一下再算收益",
-    "expected": "执行 match.js 20260901 20260930（sync 幂等覆盖同窗口记录）后 profit.js 2026-09，不删除任何数据"
+    "expected": "执行 match.js 20260901 20260930（sync-tzzb 幂等覆盖同窗口记录）后 profit.js 2026-09，不删除任何数据"
   },
   {
     "id": 5,
@@ -42,6 +42,16 @@
   {
     "id": 9,
     "prompt": "帮我更新一下 Cookie / 跑 opencli stock init",
-    "expected": "说明该命令已移除：本地不落 Cookie 文件，sync 复用浏览器登录态；引导在浏览器登录 https://tzzb.10jqka.com.cn/pc/index.html 后重跑 opencli stock sync，不要臆造命令"
+    "expected": "说明该命令已移除：本地不落 Cookie 文件，sync-tzzb 复用浏览器登录态；先跑 opencli stock login-tzzb（或手动登录 https://tzzb.10jqka.com.cn/pc/index.html）后重跑 opencli stock sync-tzzb，不要臆造命令"
+  },
+  {
+    "id": 10,
+    "prompt": "同花顺登录态过期了，帮我重新登录一下，老弹滑块验证",
+    "expected": "执行 opencli stock login-tzzb（浏览器自动填充 + 滑块自动通过）；未自动填充时提示 --user/--pass 或 --wait-manual 30；登录成功后可直接 opencli stock sync-tzzb"
+  },
+  {
+    "id": 11,
+    "prompt": "嘉信登录过期了，帮我重新登录一下",
+    "expected": "执行 opencli stock login-schwab（凭据/TOTP 读 ~/.duckdb/stock/stock.config，浏览器会话持久化）；成功后可直接 opencli stock sync-schwab"
   }
 ]

@@ -1,5 +1,5 @@
 /**
- * opencli stock login —— 自动登录嘉信理财（client.schwab.com）
+ * opencli stock login-schwab —— 自动登录嘉信理财（client.schwab.com）
  *
  * 登录分两步：
  *   第 1 步 用户名+密码：从 ~/.duckdb/stock/stock.config 读取 SCHWAB_USERNAME /
@@ -817,12 +817,12 @@ async function runPostLoginPoll(page, frameIndex, { maxAttempts, resolveSecret }
 
 cli({
   site: SITE,
-  name: "login",
+  name: "login-schwab",
   description:
     "自动登录嘉信理财（client.schwab.com，两步）：凭据/密钥统一从 ~/.duckdb/stock/stock.config 读取（SCHWAB_USERNAME / SCHWAB_PASSWORD / SCHWAB_SECRET，兼容旧键 SCHWAB_SCRET），也可 --user/--pass/--secret 覆盖；TOTP 验证码自动填入",
   access: "write",
   example:
-    "opencli stock login                           # 配置文件凭据 + TOTP 自动登录\nopencli stock login --user u --pass p            # 命令行凭据覆盖配置\nopencli stock login --wait-manual                # 人工在窗口点选保存的密码，自动继续\nopencli stock login --config /path/to/stock.config",
+    "opencli stock login-schwab                               # 配置文件凭据 + TOTP 自动登录\nopencli stock login-schwab --user u --pass p              # 命令行凭据覆盖配置\nopencli stock login-schwab --wait-manual                  # 人工在窗口点选保存的密码，自动继续\nopencli stock login-schwab --config /path/to/stock.config",
   domain: "client.schwab.com",
   strategy: Strategy.UI,
   browser: true,
