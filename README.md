@@ -93,8 +93,10 @@ opencli stock sync-tzzb
 cd ~/.agents/skills/stock-skill/scripts
 node profit.js
 
-# 排查未匹配记录
+# 排查未匹配记录（默认 LIFO 口径，与 profit.js 一致）
 node unmatched.js
+# 看三种算法都配不上的「真」未匹配
+node unmatched.js --strategy all
 ```
 
 ### 同步嘉信美股（接口）
@@ -118,9 +120,9 @@ cd ~/.agents/skills/stock-skill/scripts && node profit.js
 | `opencli stock login-tzzb` | `[--user] [--pass] [--wait-manual] [--max-attempts] [--timeout]` | 自动登录同花顺账号中心 `upass.10jqka.com.cn`：切到密码登录后点击用户名触发浏览器自动填充记住的账号（也可 `--user/--pass` 覆盖），点登录后若出现滑块安全验证，自动识别拼图缺口并拖动通过（`--max-attempts` 单轮拖动次数，默认 3）。登录态对 `tzzb.10jqka.com.cn` 同样有效，`sync-tzzb` 可直接复用 |
 | `opencli stock sync-tzzb` | `[startDate] [endDate] [--dry-run]` | 同花顺（A 股/港股）账户与交易记录同步，日期格式 YYYYMMDD，默认当月；需先 `opencli stock login-tzzb`（或手动登录同花顺投资决策页）。美股不在这里，走 `opencli stock sync-schwab` |
 | `opencli stock sync-schwab` | `[startDate] [endDate] [--account] [--account-id] [--dry-run] [--timeout]` | **美股数据唯一写入路径**。嘉信(Schwab)接口同步：从浏览器会话取 Bearer token 后同源调用 `ausgateway` 交易接口，自动分页（末页不再返回游标即停止）。买卖按 1 股拆分（金额/费用均摊，尾差落最后一条），现金流水不拆；默认同步当月，给日期可指定/回补区间；`history_id` 幂等，重跑覆盖不重复；接口无成交时间，统一记 `16:00:00`；需先 `opencli stock login-schwab` |
-| `node match.js` | `[--db <path>]` | 匹配本地库中未配对的买卖记录（纯本地，`profit.js` 已内置此步，无需单独跑） |
-| `node profit.js` | `[startMonth] [endMonth] [--db <path>]` | 查询收益，月份格式 `YYYY-MM`；一个事务内先清理查询范围内 0 过户费的匹配记录，再全库重算配对（崩溃整体回滚）；输出含**币种列**（US→USD，其余 CNY，跨币种不可加总）；交易记录 0 过户费只统计提示（需 `opencli stock sync-tzzb` 重拉修复）；纯本地 |
-| `node unmatched.js` | `[--code] [--name] [--op] [--start] [--end] [--account] [--all] [--db <path>]` | 查询未配对记录，默认与配对口径一致（op=1/2 且数量>0）；`--all` 含逆回购/派息等非买卖流水 |
+| `node match.js` | `[--strategy lifo\|fifo\|psf\|all] [--db <path>]` | 匹配本地库中未配对的买卖记录，默认 `all`=三算法都跑（纯本地，`profit.js` 已内置此步，无需单独跑） |
+| `node profit.js` | `[startMonth] [endMonth] [--strategy lifo\|fifo\|psf] [--db <path>]` | 查询收益，月份格式 `YYYY-MM`，默认 `lifo`；一个事务内先清理查询范围内 0 过户费的匹配记录，再全库重算配对（崩溃整体回滚）；输出含**币种列**（US→USD，其余 CNY，跨币种不可加总）；交易记录 0 过户费只统计提示（需 `opencli stock sync-tzzb` 重拉修复）；纯本地 |
+| `node unmatched.js` | `[--code] [--name] [--op] [--start] [--end] [--account] [--strategy lifo\|fifo\|psf\|all] [--all] [--db <path>]` | 查询未匹配记录；默认只列可配对记录（op=1/2 且数量>0）；`--strategy` 决定按哪种算法判定未匹配，默认 `lifo`（与 `profit.js` 一致），`all`=三算法并集，输出末尾附并集对照数；`--all` 是流水口径（含逆回购/派息等非买卖流水） |
 | `node --test selftest.js` | 无 | 纯函数自测：匹配算法、净额口径、嘉信同步纯函数与 `history_id` 主键守卫、日期与表格工具、schema 漂移守卫（不碰数据库；需插件依赖已装，缺失时嘉信用例自动跳过） |
 | `node --test inttest.js` | 无 | 钱路集成测试：临时 DuckDB 库上跑通 `tradeMatch` 落库 + `gridProfit` 三层聚合，校验收益金额、币种派生与 SQL 位置参数绑定 |
 

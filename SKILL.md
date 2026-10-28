@@ -26,7 +26,7 @@ category: finance
 | 仅初始化表结构 | `opencli stock init-db` | 只建表建索引（sync-tzzb 启动时已自动执行） |
 | 交易记录匹配 | `node match.js [--strategy lifo\|fifo\|psf\|all]` | 匹配本地库中未配对的买入/卖出（纯本地，不联网）。默认 `all`=三种算法都跑；`lifo`=后入先出（成交配对视图）；`fifo`=先入先出（盈亏计算视图）；`psf`=价差最小优先（不限时间）。匹配结果写入 `match_type` 字段区分 |
 | 收益统计 | `node profit.js [startMonth] [endMonth] [--strategy lifo\|fifo\|psf]` | 查询网格收益，月份格式 `YYYY-MM`；年收益 = 年初至截止月累计。执行时在一个事务内先清理**查询范围内** 0 过户费的匹配记录、再调用与 `match.js` 相同的 `tradeMatch()` 重算配对（崩溃则整体回滚，不会留下"删了未重配"的不一致）；匹配策略同 `match.js`，默认 `lifo`。0 过户费的交易记录只统计提示，需 `opencli stock sync-tzzb` 重拉修复。输出含**币种列**（嘉信等 `market_code='US'` 账户标 USD，其余 CNY，跨账户不可加总）；纯本地，不联网 |
-| 未匹配查询 | `node unmatched.js [--code] [--name] [--op] [--start] [--end] [--account] [--all]` | 默认只列可配对记录（op=1/2 且数量>0），与 `match.js` 口径一致；`--all` 含逆回购/派息等非买卖流水 |
+| 未匹配查询 | `node unmatched.js [--code] [--name] [--op] [--start] [--end] [--account] [--strategy lifo\|fifo\|psf\|all] [--all]` | 默认只列可配对记录（op=1/2 且数量>0），按 `--strategy` 指定的算法判定未匹配（默认 `lifo`，与 `profit.js` 收益口径一致；`all`=三算法并集，被任一算法配过即视为已匹配），输出末尾附三算法并集对照数；`--all` 是流水口径（含逆回购/派息等非买卖流水），与 `--strategy all` 互不影响 |
 | 纯函数自测 | `node --test selftest.js` | 校验匹配算法、净额口径、嘉信同步纯函数与 `history_id` 主键守卫、日期与表格工具、schema 漂移守卫（不碰数据库） |
 | 钱路集成测试 | `node --test inttest.js` | 临时 DuckDB 库跑通 `tradeMatch` 落库 + `gridProfit` 聚合，校验收益金额、币种与 SQL 参数绑定 |
 
@@ -216,6 +216,7 @@ FROM t_trade_record WHERE entry_date = current_date ORDER BY entry_time
 - **不要**给嘉信换 `--account` 名称：`account_id` 由账户名派生（`US-<sha1 前 10 位>`），改名会让新旧两套记录并存、收益翻倍；同一账户名重跑 `sync-schwab` 才是覆盖而非新增
 - **不要**直接查匹配表当收益：未匹配记录不计入收益；`profit.js` 已在查询前自动重算配对，无需单独跑 `match.js`
 - **不要**同时运行多个同步/收益/匹配进程（DuckDB 单写者锁会静默丢写入）；`opencli stock sync-tzzb`、`opencli stock login-tzzb`、`opencli stock sync-schwab` 与 `opencli stock login-schwab` 共用同一个浏览器会话（`site:stock`），必须串行执行
+- **不要**把某个算法的未匹配当成"全部未匹配"：同一条记录可能 LIFO 配不上、FIFO/PSF 配得上。`unmatched.js` 默认按 LIFO（与 `profit.js` 收益口径一致）判定，看三算法都配不上的真未匹配要加 `--strategy all`；配对分组键是 `account_id|code|entry_count`，**跨账户永不互配**，所以某账户只有买入没有卖出时，那些买入会长期留在未匹配池，属持仓而非漏配
 - **不要**在 `login-tzzb` 因账号/密码被拒（AUTH_REQUIRED 且提示账号异常/密码错误）后反复重跑：这会加深同花顺风控，先核对浏览器保存的凭据
 
 故障排查见 [README.md 故障排除](README.md#故障排除)；命令清单与口径以本文件「命令总览」「收益口径」「红线速查」为准。

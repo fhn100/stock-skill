@@ -27,7 +27,12 @@
   {
     "id": 6,
     "prompt": "查一下药明生物最近有哪些买卖没配上",
-    "expected": "执行 unmatched.js --name 药明生物（或 DuckDB MCP 查询），列出未配对记录及原因"
+    "expected": "执行 node unmatched.js --name 药明生物 --start <当年0101>（默认只查当月，排查历史挂仓需放宽日期），默认按 LIFO 口径判定未匹配（与 profit.js 一致）；必要时用 --strategy all 区分「单算法没配上」与「三算法都配不上」，并解释配对按 account_id|code|entry_count 分组、跨账户不互配"
+  },
+  {
+    "id": 12,
+    "prompt": "unmatched.js 说没有未匹配记录，可我记得 LIFO 下明明还剩很多，为什么？",
+    "expected": "指出算法口径差异：默认口径已改为按单一算法（lifo）判定，--strategy all 才是三算法并集（被任一算法配过即视为已匹配）；用 --strategy fifo/psf 交叉验证，并说明收益以 profit.js 的 lifo 口径为准，不改数据库"
   },
   {
     "id": 7,
