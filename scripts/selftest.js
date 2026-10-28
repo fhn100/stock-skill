@@ -316,6 +316,36 @@ test("schema.js TRADE_COLUMNS 与建表列集合一致", () => {
   assert.ok(sameSet(TRADE_COLUMNS, parseColumnNames(TRADE_RECORD_DDL)));
 });
 
+// ============================ 插件拆分：共用导出导入一致性 ============================
+
+/**
+ * 命令文件从 sync-common.js 解构导入共用导出。漏写一个名字（如 DB_PATH）node --check
+ * 查不出来，要等运行到那一行才炸 ReferenceError（sync-schwab 曾在拉完数据后报错），
+ * 这里做静态比对兜底。
+ */
+test("sync 命令文件已导入所有引用的 sync-common 导出", () => {
+  const pluginDir = path.join(import.meta.dirname, "..", "resources", "stock");
+  const commonSrc = fs.readFileSync(path.join(pluginDir, "sync-common.js"), "utf8");
+  const exportNames = [...commonSrc.matchAll(/^export (?:async )?(?:function|const) (\w+)/gm)].map((m) => m[1]);
+  assert.ok(exportNames.length >= 10, `sync-common.js 导出解析异常: ${exportNames.join(",")}`);
+
+  // 注释里也会提到导出名（如 TRADE_COLUMNS），按行剥掉注释再判断引用
+  const stripCommentLines = (src) => src.split("\n")
+    .filter((line) => !/^\s*(\/\/|\/\*|\*)/.test(line))
+    .join("\n");
+
+  for (const file of ["sync-tzzb.js", "sync-schwab.js"]) {
+    const src = fs.readFileSync(path.join(pluginDir, file), "utf8");
+    const importBlock = /import\s*\{([^{}]*)\}\s*from\s*["']\.\/sync-common\.js["']/.exec(src)?.[1];
+    assert.ok(importBlock, `${file} 未找到 sync-common 导入`);
+    const imported = new Set(importBlock.split(",").map((s) => s.trim()).filter(Boolean));
+    const code = stripCommentLines(src);
+    const missing = exportNames.filter((name) =>
+      new RegExp(`\\b${name}\\b`).test(code) && !imported.has(name));
+    assert.deepEqual(missing, [], `${file} 漏导入: ${missing.join(", ")}`);
+  }
+});
+
 // ============================ 美股（嘉信）同步：纯函数守卫 ============================
 
 /**

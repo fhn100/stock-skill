@@ -8,7 +8,7 @@ import { AuthRequiredError, CommandExecutionError } from "@jackwener/opencli/err
 import { log } from "@jackwener/opencli/logger";
 import { createHash } from "node:crypto";
 import {
-  TABLE, REQUEST_MIN_INTERVAL_MS, sleep,
+  DB_PATH, TABLE, REQUEST_MIN_INTERVAL_MS, sleep,
   resolveDateRange, openDb, initSchema, insertTrades, toTradeValues,
 } from "./sync-common.js";
 
