@@ -22,7 +22,7 @@ category: finance
 |------|------|------|
 | 同花顺登录 | `opencli stock login-tzzb [--user u --pass p] [--wait-manual 30] [--max-attempts 3]` | 自动登录 `upass.10jqka.com.cn`：切密码登录 → 点击用户名触发浏览器自动填充 → 点登录 → 出现滑块验证时自动识别拼图缺口并拖动通过。**登录态对 `tzzb.10jqka.com.cn` 同样有效**，可作为 `sync-tzzb` 前的登录步骤；未保存账号密码时用 `--user/--pass`，或 `--wait-manual N` 人工填完再自动继续 |
 | 交易记录同步 | `opencli stock sync-tzzb [start] [end]` | **只管同花顺（A 股/港股）**，美股走下面的 `sync-schwab`。复用浏览器登录态（策略 COOKIE）拉取数据；需先 `opencli stock login-tzzb`（或手动登录 `https://tzzb.10jqka.com.cn/pc/index.html`）。建表 + 同步账户字典 + 交易记录，日期格式 `YYYYMMDD`（默认当月）；自动分页、幂等 |
-| 嘉信美股接口同步 | `opencli stock sync-schwab [start] [end] [--account 嘉信-冯] [--account-id 10301685] [--dry-run]` | **美股数据唯一写入路径**（独立命令，`sync-tzzb` 不再接受任何嘉信参数）。走 `ausgateway.schwab.com` 交易接口拉嘉信(Schwab)成交并写 `t_trade_record`；**须先 `opencli stock login-schwab`**。默认同步当月，显式给 `[start] [end]` 可指定/回补区间（接口 `timeFrame=All`，本地按日期过滤）；`history_id` 沿用库中既有美股记录的同一公式（`CSV\|` 前缀是历史命名，CSV 导入脚本已移除），重跑覆盖不重复 |
+| 嘉信美股接口同步 | `opencli stock sync-schwab [start] [end] [--account 嘉信-冯] [--account-id 10301685] [--dry-run]` | **美股数据唯一写入路径**（独立命令，`sync-tzzb` 不再接受任何嘉信参数）。走 `ausgateway.schwab.com` 交易接口拉嘉信(Schwab)成交并写 `t_trade_record`；**须先 `opencli stock login-schwab`**。默认同步当月，显式给 `[start] [end]` 可指定/回补区间（区间以 `fromDate`/`toDate` 下发给接口，`timeFrame="SpecifyDateRange"`）；`history_id` 沿用库中既有美股记录的同一公式（`CSV\|` 前缀是历史命名，CSV 导入脚本已移除），重跑覆盖不重复 |
 | 仅初始化表结构 | `opencli stock init-db` | 只建表建索引（sync-tzzb 启动时已自动执行） |
 | 交易记录匹配 | `node match.js [--strategy lifo\|fifo\|psf\|all]` | 匹配本地库中未配对的买入/卖出（纯本地，不联网）。默认 `all`=三种算法都跑；`lifo`=后入先出（成交配对视图）；`fifo`=先入先出（盈亏计算视图）；`psf`=价差最小优先（不限时间）。匹配结果写入 `match_type` 字段区分 |
 | 收益统计 | `node profit.js [startMonth] [endMonth] [--strategy lifo\|fifo\|psf]` | 查询网格收益，月份格式 `YYYY-MM`；年收益 = 年初至截止月累计。执行时在一个事务内先清理**查询范围内** 0 过户费的匹配记录、再调用与 `match.js` 相同的 `tradeMatch()` 重算配对（崩溃则整体回滚，不会留下"删了未重配"的不一致）；匹配策略同 `match.js`，默认 `lifo`。0 过户费的交易记录只统计提示，需 `opencli stock sync-tzzb` 重拉修复。输出含**币种列**（嘉信等 `market_code='US'` 账户标 USD，其余 CNY，跨账户不可加总）；纯本地，不联网 |
@@ -132,7 +132,7 @@ cd ~/.agents/skills/stock-skill/scripts && node match.js
 # 步骤1：登录嘉信（凭据/TOTP 密钥读 ~/.duckdb/stock/stock.config，浏览器会话持久化）
 opencli stock login-schwab
 # 步骤2：先 dry-run 看解析量，确认无误再写库（只读，不动真实数据）
-opencli stock sync-schwab 20261001 20261031 --dry-run
+opencli stock sync-schwab 20261001 20261029 --dry-run
 
 # 步骤3：正式同步默认只写当月；回补历史时显式给区间
 opencli stock sync-schwab
@@ -151,7 +151,7 @@ cd ~/.agents/skills/stock-skill/scripts && node profit.js
 - **买卖成交按 1 股拆分入库**：接口一条 qty=N → 库里 N 条 `entry_count=1`，`entry_money/entry_cost/commission/fee_total` 按股均摊（除不尽的尾差落在最后一条，拆分前后合计不变），`entry_price` 保持每股成交价。配对脚本按 1 股粒度匹配，整笔 qty>1 会配不上。现金流水（op=6/18/19/99，含 MoneyLink Transfer，无 `symbol` 时 code 记空串）不拆、不参与买卖配对。同主键重复（现金流水可能同日同参数）追加 `x02` 序号防冲突；拆股键的去重标记追加在 `_序号` 之后（`123_1x02`），不截断后缀。
 - **金额口径（已定）**：`entry_money` 取接口 `amount`——它**已是扣费后的净额**（卖出实收、买入实付）；`commission/fee_total` 记接口 `feesAndCommission`（用户拍板的口径）。已知并接受：`netMoneyOf` 会在净额基础上再减一次 `commission`，美股卖单合计约 0.65 的重复扣费，属口径内误差。
 - 接口响应**没有任何成交时间**，统一记 `entry_time='16:00:00'`（美股收盘近似），保证同日顺序确定、跨机器 `history_id` 稳定。
-- 接口日期参数只验证过 `timeFrame=All`（`Last30Days` 等取值会 400），所以时间区间一律**本地过滤**；降序返回，一旦早于 `--start` 即停止翻页。
+- **日期区间由接口过滤**：请求体带 `fromDate`/`toDate`（YYYY-MM-DD）+ `timeFrame="SpecifyDateRange"`（与嘉信页面「导出 CSV」同款）；默认当月即用当月起止日期，服务端只返回区间内记录，月同步约一页。`Last30Days` 等其它 timeFrame 取值会 400，不要用。**接口拒绝未来日期**（`ToDate cannot be a date in the future`），`end` 晚于美东今天时自动夹到今天——当月月末总在未来，不夹会每月中旬前必失败。本地仍按 `[start,end]` 兜底过滤（防服务端忽略区间），降序返回时一旦早于 `--start` 即停止翻页。
 - `--account` 必须与既有数据一致（默认 `嘉信-冯`）：`account_id` 由账户名派生（`US-<sha1 前 10 位>` = `US-c0e4a175de`），改名等于换一个账户，会与历史数据并存成两套。
 
 ### 场景：查询交易记录（DuckDB MCP）

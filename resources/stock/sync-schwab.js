@@ -4,7 +4,7 @@
  * 建表/连接等共用逻辑在 sync-common.js，同花顺同步见 sync-tzzb.js。
  */
 import { cli, Strategy } from "@jackwener/opencli/registry";
-import { AuthRequiredError, CommandExecutionError } from "@jackwener/opencli/errors";
+import { AuthRequiredError, ArgumentError, CommandExecutionError } from "@jackwener/opencli/errors";
 import { log } from "@jackwener/opencli/logger";
 import { createHash } from "node:crypto";
 import {
@@ -50,6 +50,11 @@ const OP_US = { BUY: "1", SELL: "2", DIVIDEND: "6", TRANSFER_IN: "18", TRANSFER_
 // ============================ 嘉信（Schwab）交易记录 ============================
 
 const pad2 = (n) => String(n).padStart(2, "0");
+/**
+ * 接口的「今天」按美东日期判定：北京早上时美东仍在前一天，
+ * 直接给本机日期（北京）会被服务端判成未来日期而 400。
+ */
+const schwabToday = () => new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(new Date());
 /** 与 scripts/utils.js 逐字一致：金额舍入口径决定 history_id，两边必须同一实现 */
 const round4 = (n) => Math.round((Number(n) + Number.EPSILON) * 1e4) / 1e4;
 
@@ -346,11 +351,16 @@ async function fetchSchwabBearer(page) {
   );
 }
 
-/** 在 ausgateway 同源页面内 POST 一页交易记录 */
-async function fetchSchwabTxPage(page, { auth, accountId, bookmark }) {
+/**
+ * 在 ausgateway 同源页面内 POST 一页交易记录。
+ * 日期区间交给服务端过滤：timeFrame=SpecifyDateRange + fromDate/toDate（YYYY-MM-DD），
+ * 与嘉信页面「导出 CSV」发出的请求体一致；服务端只返回区间内记录，月同步约一页。
+ */
+async function fetchSchwabTxPage(page, { auth, accountId, bookmark, startDate, endDate }) {
   const body = {
     accountNickname: "Individual",
     exportType: "Csv",
+    fromDate: startDate,
     includeOptionsInSearch: false,
     isSpsLinkedUkAccount: false,
     selectedAccountId: String(accountId),
@@ -358,8 +368,8 @@ async function fetchSchwabTxPage(page, { auth, accountId, bookmark }) {
     sortColumn: "Date",
     sortDirection: "Descending",
     symbol: "",
-    // 接口只验证过 All：按日期区间取数改由本地过滤完成，避免 timeFrame 取值不确定
-    timeFrame: "All",
+    timeFrame: "SpecifyDateRange",
+    toDate: endDate,
     bookmark: bookmark ?? null,
     shouldPaginate: true,
   };
@@ -410,7 +420,9 @@ async function fetchSchwabTxPage(page, { auth, accountId, bookmark }) {
 }
 
 /**
- * 分页拉取嘉信交易记录（降序返回，本地按 [startDate, endDate] 过滤）
+ * 分页拉取嘉信交易记录（降序返回）
+ * 日期区间由服务端过滤（fromDate/toDate），本地仍按 [startDate, endDate] 兜一层：
+ * 服务端若忽略区间或边界多返回几条，也不会污染库或白拉更多页。
  * @returns {Promise<{records: object[], warnings: string[], pages: number, fetched: number}>}
  */
 async function fetchSchwabRecords(page, { auth, selectedAccountId, accountName, startDate, endDate }) {
@@ -426,7 +438,7 @@ async function fetchSchwabRecords(page, { auth, selectedAccountId, accountName, 
   let outOfRange = false;
 
   while (pages < SCHWAB_PAGE_LIMIT && !outOfRange) {
-    const data = await fetchSchwabTxPage(page, { auth, accountId: selectedAccountId, bookmark });
+    const data = await fetchSchwabTxPage(page, { auth, accountId: selectedAccountId, bookmark, startDate, endDate });
     const list = Array.isArray(data.brokerageTransactions) ? data.brokerageTransactions : [];
     pages += 1;
     fetched += list.length;
@@ -468,11 +480,22 @@ async function syncSchwab(page, kwargs) {
   const dryRun = Boolean(kwargs["dry-run"]);
   const accountId = schwabAccountId(accountName);
 
-  // 默认只同步当月（与 sync-tzzb 一致）；接口本身只支持全量拉取，日期区间在本地过滤。
-  // 需要回补历史时显式传入 start/end，例如 opencli stock sync-schwab 20240101 20261031。
+  // 默认只同步当月（与 sync-tzzb 一致）；区间下发给接口（fromDate/toDate + SpecifyDateRange），
+  // 由服务端过滤，月同步只需一页左右。回补历史时显式传入 start/end，
+  // 例如 opencli stock sync-schwab 20240101 20261031。
   const { startDate: s, endDate: e } = resolveDateRange(kwargs);
   const startDate = `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`;
-  const endDate = `${e.slice(0, 4)}-${e.slice(4, 6)}-${e.slice(6, 8)}`;
+  let endDate = `${e.slice(0, 4)}-${e.slice(4, 6)}-${e.slice(6, 8)}`;
+  // 接口拒绝未来日期（400 "ToDate cannot be a date in the future"）。默认当月月末通常还在未来，
+  // 必须夹到美东的今天，否则每月中旬前同步必然失败。
+  const today = schwabToday();
+  if (endDate > today) {
+    log.info(`结束日期 ${endDate} 晚于今天，接口不允许未来日期，按 ${today} 同步`);
+    endDate = today;
+  }
+  if (startDate > endDate) {
+    throw new ArgumentError(`同步区间 ${startDate} ~ ${endDate} 无效：开始日期晚于美东今天（${today}）`);
+  }
   log.info(`嘉信账户 ${accountName}（${selectedAccountId}）同步范围：${startDate} ~ ${endDate}`);
 
   const auth = await fetchSchwabBearer(page);
@@ -494,7 +517,7 @@ async function syncSchwab(page, kwargs) {
     return [{ account: accountName, fundKey: accountId, written: 0, pages, error: "dry-run" }];
   }
   if (parsed === 0) {
-    log.warn("区间内没有可写入的交易记录（接口已返回 0 条，或全部被日期过滤）");
+    log.warn("区间内没有可写入的交易记录（接口按 fromDate/toDate 返回 0 条，或全部被日期过滤）");
     return [{ account: accountName, fundKey: accountId, written: 0, pages, error: "" }];
   }
 
@@ -550,7 +573,7 @@ cli({
   navigateBefore: false,
   args: [
     { name: "start", type: "string", positional: true, help: "开始日期 YYYYMMDD，默认当月 1 日" },
-    { name: "end", type: "string", positional: true, help: "结束日期 YYYYMMDD，默认 start 所在月月末（不给 start 时为当月月末）" },
+    { name: "end", type: "string", positional: true, help: "结束日期 YYYYMMDD，默认 start 所在月月末（不给 start 时为当月月末）；晚于今天时按今天处理（接口拒绝未来日期）" },
     { name: "account", type: "string", default: SCHWAB_DEFAULT_ACCOUNT_NAME, help: "账户名（写入 account_name，account_id 由其派生；改名等于另起一套记录，会重复计收益）" },
     { name: "account-id", type: "string", default: SCHWAB_DEFAULT_ACCOUNT_ID, help: "嘉信账号 selectedAccountId（同时写入 manual_id）" },
     { name: "dry-run", type: "bool", default: false, help: "只拉取与解析，不写库" },
