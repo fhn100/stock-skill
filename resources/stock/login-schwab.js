@@ -17,6 +17,11 @@
  * 说明：Chromium 在 debugger/CDP 附加的自动化标签页中会抑制跨域 iframe 的密码
  * 自动填充下拉（安全行为）。本插件默认直接用配置文件中的凭据，不依赖浏览器 autofill。
  *
+ * 点击口径（2026-10-31 起）：提交类按钮（登入 / 验证码 Continue / 验证方式继续）一律
+ * DOM click（见 clickInSelector）。CDP 坐标点击在嘉信登录页会被静默丢弃（坐标算对、无遮挡、
+ * 页面可见也不落地），旧实现优先坐标点击导致「点了没反应 → 等满 150s 超时」。仅浏览器 UI
+ * （autofill 下拉、方向键选择）仍用原生坐标点击/按键，存在于 fillFirstStep 的兜底分支。
+ *
  * 结构：常量 → ctx 化浏览器原语（type/click/eval 同时作用于主文档与跨域 iframe）
  *       → 验证码定位/提交 → 流程步骤（waitForLoginFrame / fillFirstStep /
  *       runPostLoginPoll）→ cli() 注册。
@@ -60,10 +65,13 @@ const OTP_SERVER_WAIT_MS = 10_000;       // 单次 OTP 提交后等待服务器�
 const OTP_SERVER_POLL_MS = 400;
 const CHALLENGE_DIAGNOSTIC_MS = 15_000;  // 停在验证页这么久仍无输入框 → 打印一次实况诊断
 const FULL_SCAN_EVERY = 4;               // OTP 页检测每 N 轮做一次全 frame 扫描（慢路径）
+const SUBMIT_CONFIRM_MS = 8_000;         // DOM 点击「登入」后的确认窗口：仅用于诊断，不再二次点击
 
 // 密码填错/账号被锁不会自我恢复，重试只会延长锁定 —— 命中即终止。
+// 「代号/密码无效」是嘉信中文站的实测拒绝文案（span.msg-error），旧正则会漏判成「未跳转」，
+// 导致超时 + 盲目重试加深风控，必须一并覆盖。
 const FATAL_ERROR_RE =
-  /密码不正确|用户名或密码|帐户?已锁|账号?已锁|锁定时段|多次尝试|too many|l?ock(ed)?|incorrect (user|password|credentials)|invalid (user|password|credentials)/i;
+  /密码不正确|用户名或密码|帐户?已锁|账号?已锁|锁定时段|多次尝试|too many|l?ock(ed)?|(代号|用户名|密码|帐号|账号|凭据)[^。]{0,8}无效|incorrect (user|password|credentials)|invalid (user|password|credentials|login|id)/i;
 
 // 登录成功 = 主文档离开该登录页
 const isLoginPage = (url) => /\/Areas\/Access\/Login/.test(String(url || ""));
@@ -298,43 +306,67 @@ async function typeIntoSelector(page, ctx, selector, text) {
   return { ok: back === textS, actual: back };
 }
 
-/** 在 ctx 内点击元素（优先原生坐标点击，回退 JS click） */
+/**
+ * 在 ctx 内点击元素：一律 DOM click（el.click()）。
+ * 旧实现优先「坐标 + Input.dispatchMouseEvent」，实测在嘉信登录页会被静默丢弃：
+ * 按同款算法算出的按钮点位 (612,420) 上 `elementFromPoint` 命中的就是 lmsIframe，
+ * dpr=1 / visualViewport.scale=1 / scrollY=0 / 无遮挡 / visibilityState=visible 全正常，
+ * 事件却不落地，表现为「点了没反应 → 等满 150s 超时」，而同一个元素 el.click() 立即跳转。
+ * 2026-10-31 起去掉坐标路径。需要操作浏览器 UI（autofill 下拉、方向键选择）的原生点击
+ * 仍保留在 fillFirstStep 的兜底分支里直接用 nativeClickAt/nativeKeyPress，不受影响。
+ * 元素不存在时抛错，供调用方 try/catch 换下一个选择器。
+ */
 async function clickInSelector(page, ctx, selector) {
   const sel = JSON.stringify(selector);
-  // 原生坐标点击（iframe 内元素需叠加 iframe 偏移；主文档直接用视口坐标）
-  try {
-    if (ctx.kind === "frame") {
-      const pos = await elementViewportCenter(page, ctx.index, selector);
-      if (pos) {
-        await nativeClickAt(page, pos.x, pos.y);
-        return;
-      }
-    } else {
-      const pos = await page.evaluate(
-        `(() => {
-          const el = document.querySelector(${sel});
-          if (!el) return null;
-          el.scrollIntoView({ block: 'center', behavior: 'instant' });
-          const r = el.getBoundingClientRect();
-          return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
-        })()`,
-      );
-      if (pos?.x != null) {
-        await nativeClickAt(page, pos.x, pos.y);
-        return;
-      }
-    }
-  } catch { /* fall through to JS click */ }
   await evalIn(
     page,
     ctx,
     `(() => {
       const el = document.querySelector(${sel});
       if (!el) throw new Error('元素不存在: ' + ${sel});
+      if (typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'center', behavior: 'instant' });
       el.click();
       return true;
     })()`,
   );
+}
+
+/**
+ * iframe（SPA）内部的当前 URL —— 登录 widget 在 #/login-one-step ↔ #/placeholder 间切换，
+ * 主文档 URL 不变时它才是「提交已被受理」的可靠信号。
+ */
+async function frameHref(page, index) {
+  if (index < 0) return "";
+  try {
+    return String((await page.evaluateInFrame("location.href", index)) || "");
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * DOM 点击「登入」后的确认窗口：出现下列任一信号即视为已提交
+ *   navigated = 主文档离开登录页   otp = 出现验证码输入框
+ *   frame:*   = iframe 内部路由变化（SPA 受理）  error:* = 服务器已回错误文本
+ * 返回 "" 表示毫无反应（DOM 结构漂移 / 按钮换了实现），由调用方采集实况诊断，
+ * 不做第二次点击——重复提交会白烧嘉信的登录尝试。
+ */
+async function waitSubmitReaction(page, frameIndex, timeoutMs = SUBMIT_CONFIRM_MS) {
+  const baseHref = await frameHref(page, frameIndex);
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const url = await pageUrl(page);
+    if (url && !isLoginPage(url)) return "navigated";
+    try {
+      if (await page.evaluate(SECURITY_CODE_PROBE)) return "otp";
+    } catch { /* 导航切换中 */ }
+    const inner = await frameHref(page, frameIndex);
+    if (inner && baseHref && inner !== baseHref) return `frame:${inner.slice(0, 120)}`;
+    const errText = await readFormError(page, frameCtx(frameIndex));
+    if (errText) return `error:${errText.slice(0, 200)}`;
+    await page.sleep(0.6);
+  }
+  return "";
 }
 
 async function readFrameCredentials(page, index) {
@@ -377,15 +409,19 @@ async function ensurePageVisible(page) {
 }
 
 // 可见错误文本选择器：主文档与登录 iframe 的 DOM 实测不同，各保留一套。
+// .msg-error = 嘉信登录 widget（sws-gateway #/login-one-step）实测的服务器错误容器，
+// 既不是 [role=alert] 也不是 data-testid，旧列表抓不到它 → 密码被拒时表现为「静默超时」。
 const PAGE_ERROR_SELECTORS = [
   ".error", "[role=\"alert\"]", ".sdps-form-element__error",
   ".access-code-wrapper .sdps-form-element__error",
   "lms-messenger", "#messenger", ".sdps-notification[type=\"error\"]", "sdps-form-element__error",
+  ".msg-error",
 ];
 const FRAME_ERROR_SELECTORS = [
   ".error", "[role=\"alert\"]", ".sdps-form-element__error",
   ".access-code-wrapper .sdps-form-element__error", "[data-testid*=\"error\" i]", ".infomsg-margin",
   "lms-messenger", "#messenger", ".sdps-notification[type=\"error\"]",
+  ".msg-error",
 ];
 
 const ctxErrorSelectors = (ctx) => (ctx.kind === "page" ? PAGE_ERROR_SELECTORS : FRAME_ERROR_SELECTORS);
@@ -581,11 +617,12 @@ async function submitSecurityCodes(page, ctx, maxAttempts, resolveSecret, hooks 
     if (!typed.ok) {
       throw new CommandExecutionError(`OTP 验证码填写失败（回读 ${JSON.stringify(typed.actual)}）`);
     }
-    // 提交验证码：优先 Continue / 登入按钮，回退任意主要按钮
-    try {
-      await clickInSelector(page, codeCtx, "#continueButton");
-    } catch {
-      await clickInSelector(page, codeCtx, 'button[type="submit"], button[class*="primary"], #btnLogin');
+    // 提交验证码：优先 Continue / 登入按钮，回退任意主要按钮（clickInSelector 已是 DOM 点击）。
+    for (const s of ["#continueButton", 'button[type="submit"], button[class*="primary"], #btnLogin']) {
+      try {
+        await clickInSelector(page, codeCtx, s);
+        break;
+      } catch { /* 该选择器不存在，换下一个 */ }
     }
     // 提交后自适应等待服务器响应：嘉信校验往返可能 >1s，固定短等待会把
     // 「还在处理中」误判成「未通过」，白白消耗重试次数。
@@ -603,6 +640,11 @@ async function submitSecurityCodes(page, ctx, maxAttempts, resolveSecret, hooks 
       if (errText) break;
       // 输入框已消失（跳转/换形态中），交由外层轮询重新定位
       if (!String(snap.code || "")) break;
+    }
+    // 一整轮既无错误文本、也没跳转 → 打印一次页面实况，便于判断按钮/输入框选择器是否已漂移
+    if (!errText && attempt === 1 && !isFinalLoggedInUrl(await pageUrl(page))) {
+      log.info("[诊断] OTP 提交后无可见错误，采集页面实况…");
+      await dumpLoginTransition(page, codeCtx.kind === "frame" ? codeCtx.index : -1);
     }
     if (attempt < maxAttempts) {
       hooks.onRetry?.(errText || "页面仍停留");
@@ -894,10 +936,21 @@ cli({
       user, pass, manualWait, configFile,
     });
 
-    // ---- 提交登录（第 1 步表单） ----
+    // ---- 提交登录（第 1 步表单）：DOM 点击，不走坐标命中测试 ----
     await ensurePageVisible(page);
-    log.info("点击登入，等待浏览器跳转…");
+    log.info("点击登入（DOM 点击），等待浏览器跳转…");
     await clickInSelector(page, frameCtx(frameIndex), LOGIN_SUBMIT_SEL);
+
+    // 8s 内没有任何受理信号 → 只采集页面实况诊断，绝不二次点击（重复提交会白烧登录尝试）。
+    const reaction = await waitSubmitReaction(page, frameIndex);
+    if (!reaction) {
+      log.warn("点击登入后无反应（未跳转、无验证码框、无错误提示），采集页面实况诊断…");
+      await dumpLoginTransition(page, frameIndex);
+    } else if (reaction.startsWith("error:")) {
+      log.warn(`服务器已回错误提示: ${reaction.slice(6)}`);
+    } else {
+      log.info(`提交已受理（${reaction}）`);
+    }
 
     // ---- 第 2 步：跳转 / OTP / 成功判定（状态机） ----
     const { finalUrl, otpAttempts } = await runPostLoginPoll(page, frameIndex, {
